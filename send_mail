@@ -1,0 +1,46 @@
+def send_summary_email_with_exact_excel_table(output_path: Path, curr_label: str):
+    """
+    Opens Excel, copies the summary table (used range) exactly as formatted,
+    pastes into Outlook email using WordEditor, and sends the mail.
+    """
+
+    excel = win32.Dispatch("Excel.Application")
+    excel.Visible = False
+
+    wb = excel.Workbooks.Open(str(output_path))
+    ws = wb.Worksheets(OUTPUT_SHEET_NAME)
+
+    # Copy the entire used range with formatting
+    used_rng = ws.UsedRange
+    used_rng.Copy()
+
+    # Start Outlook
+    outlook = win32.Dispatch("Outlook.Application")
+    mail = outlook.CreateItem(0)
+
+    # Must display the mail to attach WordEditor
+    mail.Display()  # CRITICAL FIX
+
+    # Get the inspector
+    inspector = mail.GetInspector
+    word_editor = inspector.WordEditor  # Now it works
+
+    # Paste from clipboard into the body
+    word_editor.Application.Selection.Paste()
+
+    # Fill metadata
+    mail.Subject = "Daily Headcount"
+    mail.To = "email1@bank.com; email2@bank.com"
+    mail.HTMLBody = f"<p>Hi all,<br>PFB Headcount as of {curr_label}</p>" + mail.HTMLBody
+
+    wb.Close(False)
+    excel.Quit()
+
+    mail.Send()
+
+    ctypes.windll.user32.MessageBoxW(
+        0,
+        f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
+        "Daily HC",
+        0
+    )
