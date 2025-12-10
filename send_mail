@@ -1,43 +1,50 @@
-def send_summary_email_with_exact_excel_table(output_path: Path, curr_label: str):
+def send_summary_email_with_table(output_path: Path, curr_label: str):
     """
-    Opens Excel, copies the summary table (used range) exactly as formatted,
-    pastes into Outlook email using WordEditor, and sends the mail.
+    Opens Excel, copies the New_summary sheet's used range exactly as formatted,
+    pastes it into an Outlook email body (like manual Ctrl+C / Ctrl+V),
+    and sends the mail automatically.
     """
 
+    # ---------------- Excel: open summary and copy table ----------------
     excel = win32.Dispatch("Excel.Application")
-    excel.Visible = False
+    excel.Visible = False  # keep Excel in background
 
     wb = excel.Workbooks.Open(str(output_path))
     ws = wb.Worksheets(OUTPUT_SHEET_NAME)
 
-    # Copy the entire used range with formatting
     used_rng = ws.UsedRange
-    used_rng.Copy()
+    used_rng.Copy()  # copies formatting + everything
 
-    # Start Outlook
-    outlook = win32.Dispatch("Outlook.Application")
-    mail = outlook.CreateItem(0)
+    # ---------------- Outlook: create mail & ensure WordEditor exists ----
+    outlook = win32.Dispatch("Outlook.Application")  # starts Outlook if not open
+    mail = outlook.CreateItem(0)  # MailItem
 
-    # Must display the mail to attach WordEditor
-    mail.Display()  # CRITICAL FIX
-
-    # Get the inspector
-    inspector = mail.GetInspector
-    word_editor = inspector.WordEditor  # Now it works
-
-    # Paste from clipboard into the body
-    word_editor.Application.Selection.Paste()
-
-    # Fill metadata
+    # IMPORTANT: set initial body *before* Display so header appears above table
     mail.Subject = "Daily Headcount"
-    mail.To = "email1@bank.com; email2@bank.com"
-    mail.HTMLBody = f"<p>Hi all,<br>PFB Headcount as of {curr_label}</p>" + mail.HTMLBody
+    mail.To = "person1@yourbank.com; person2@yourbank.com"  # TODO: put real IDs here
+    mail.HTMLBody = f"<p>Hi all,<br>PFB Headcount as of {curr_label}</p><br>"
 
-    wb.Close(False)
+    # Display is REQUIRED so Outlook attaches a WordEditor to this mail
+    mail.Display()  # window may flash briefly
+
+    # Now inspector + WordEditor are guaranteed
+    inspector = mail.GetInspector()          # NOTE: parentheses!
+    word_editor = inspector.WordEditor
+
+    # Move cursor to end and paste the Excel range
+    selection = word_editor.Application.Selection
+    selection.EndKey(6)  # 6 = wdStory (end of document)
+    selection.Paste()    # exact Excel table, same formatting
+
+    # ---------------- Cleanup Excel & send mail --------------------------
+    excel.CutCopyMode = False
+    wb.Close(SaveChanges=False)
     excel.Quit()
 
+    # Auto-send the email
     mail.Send()
 
+    # Success popup
     ctypes.windll.user32.MessageBoxW(
         0,
         f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
