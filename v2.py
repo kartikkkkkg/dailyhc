@@ -1,0 +1,689 @@
+import pandas as pd
+import numpy as np
+from collections import defaultdict
+from pathlib import Path
+from datetime import date, timedelta
+import calendar
+
+from openpyxl import load_workbook
+from openpyxl.styles import Font, Alignment
+
+# ==============================================
+# CONFIG – EDIT THESE IF NEEDED
+# ==============================================
+
+BASE_DIR = Path(__file__).parent if "__file__" in globals() else Path.cwd()
+RAW_DIR = BASE_DIR / "raw"
+OUTPUT_DIR = BASE_DIR / "output"
+
+# Input files inside raw/
+CURRENT_HC_PATH = RAW_DIR / "hc_current.xlsx"      # today's HC (Tech & Ops)
+LAST_HC_PATH    = RAW_DIR / "hc_last_month.xlsx"   # last month-end HC
+MAPPING_WB_PATH = RAW_DIR / "mapping.xlsx"         # has sheets: mapping, rollup
+
+MAPPING_SHEET_NAME = "mapping"
+ROLLUP_SHEET_NAME  = "rollup"
+
+OUTPUT_SHEET_NAME = "New_summary"
+
+# Column names in HC files
+COL_BANK_ID     = "Bank ID"
+COL_BF_L6       = "Business Function Lvl6 Name"
+COL_EMP_TYPE_HC = "Employment Type"
+COL_FTE         = "FTE"
+
+# Column names in mapping sheet
+COL_MAP_BF_L6   = "Business Function Lvl6 Name"
+COL_COST_CAT    = "Cost Cat"
+COL_MT_DOMAIN   = "MT Domain"
+COL_MT1_DOMAIN  = "MT-1 Domain"
+COL_MAP_EMP_TYP = "Employment Type"
+COL_CONTR       = "Contr/Non-Contr"
+
+# Rollup columns
+COL_ROLLUP_ID   = "Employee ID"              # same logical as Bank ID
+
+# Which string in Contr/Non-Contr means controllable?
+CONTR_VALUE_CONT     = "Controllable"
+CONTR_VALUE_NON_CONT = "Non-Controllable"    # for future use
+
+# Cost Cat order in summary
+COST_CAT_ORDER = ["BAU", "CIO Mgmt", "TPS", "Proj"]
+
+# Total row labels (ALL CAPS)
+TOTAL_LABELS = {
+    "BAU": "BAU TOTAL",
+    "CIO Mgmt": "CIO MGMT TOTAL",
+    "TPS": "TPS TOTAL",
+    "Proj": "PROJ TOTAL",
+}
+GRAND_TOTAL_LABEL = "GRAND TOTAL"
+
+
+# ==============================================
+# DATE LABELS FOR COLUMN HEADERS + FILE NAME
+# ==============================================
+
+def get_date_labels():
+    """
+    Return:
+        curr_label: today - 1 (e.g. '9-Dec')
+        last_label: last month end (e.g. '30-Nov')
+    """
+    today = date.today()
+    curr_date = today - timedelta(days=1)
+
+    if curr_date.month == 1:
+        last_month = 12
+        year = curr_date.year - 1
+    else:
+        last_month = curr_date.month - 1
+        year = curr_date.year
+
+    last_day = calendar.monthrange(year, last_month)[1]
+    last_month_end = date(year, last_month, last_day)
+
+    curr_label = curr_date.strftime("%d-%b").lstrip("0")
+    last_label = last_month_end.strftime("%d-%b").lstrip("0")
+    return curr_label, last_label
+
+
+# ==============================================
+# HELPERS
+# ==============================================
+
+def is_agency_worker(emp_type: str) -> bool:
+    """Return True if employment type should be treated as AW."""
+    if not isinstance(emp_type, str):
+        return False
+    s = emp_type.lower()
+    return "agency" in s and "worker" in s
+
+
+def load_mapping_frames(mapping_wb_path: Path):
+    """Load mapping + rollup from mapping workbook."""
+    mapping = pd.read_excel(mapping_wb_path, sheet_name=MAPPING_SHEET_NAME)
+    rollup  = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
+
+    # BF → CostCat / MT Domain mapping
+    bf_map = mapping[
+        [COL_MAP_BF_L6, COL_COST_CAT, COL_MT_DOMAIN, COL_MT1_DOMAIN]
+    ].drop_duplicates()
+
+    # EmpType → ContrFlag mapping
+    emp_map = mapping[
+        [COL_MAP_EMP_TYP, COL_CONTR]
+    ].drop_duplicates()
+
+    return bf_map, emp_map, rollup
+
+
+def apply_mappings_to_hc(hc_raw: pd.DataFrame,
+                         bf_map: pd.DataFrame,
+                         emp_map: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each HC file:
+      - keep Bank ID, BF Lvl6, EmpType, FTE
+      - map BF Lvl6 -> Cost Cat, MT Domain, MT1 Domain
+      - map EmpType -> Contr/Non-Contr
+      - build MT_CC = "<MT Domain>-<Cost Cat>"
+    """
+    df = hc_raw[[COL_BANK_ID, COL_BF_L6, COL_EMP_TYPE_HC, COL_FTE]].copy()
+
+    df[COL_BANK_ID] = df[COL_BANK_ID].astype(str).str.strip()
+
+    # Map BF Lvl6 -> org structure
+    df = df.merge(
+        bf_map,
+        left_on=COL_BF_L6,
+        right_on=COL_MAP_BF_L6,
+        how="left",
+    )
+
+    # Map EmpType -> ContrFlag
+    df = df.merge(
+        emp_map,
+        left_on=COL_EMP_TYPE_HC,
+        right_on=COL_MAP_EMP_TYP,
+        how="left",
+    )
+
+    df.rename(columns={COL_CONTR: "ContrFlag"}, inplace=True)
+
+    # Build MT_CC e.g. "Ops CIB-BAU"
+    df["MT_CC"] = df[COL_MT_DOMAIN].astype(str) + "-" + df[COL_COST_CAT].astype(str)
+
+    return df
+
+
+def build_snapshot(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
+    """One row per Bank ID with MT_CC / FTE / EmpType / ContrFlag."""
+    cols = [
+        COL_BANK_ID,
+        "MT_CC",
+        COL_COST_CAT,
+        COL_MT_DOMAIN,
+        COL_EMP_TYPE_HC,
+        "ContrFlag",
+        COL_FTE,
+    ]
+    snap = df[cols].copy()
+    snap = snap.sort_values(COL_BANK_ID).drop_duplicates(COL_BANK_ID, keep="last")
+    snap = snap.add_suffix(f"_{suffix}")
+    snap.rename(columns={f"{COL_BANK_ID}_{suffix}": COL_BANK_ID}, inplace=True)
+    return snap
+
+
+def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
+    """
+    From combined snapshot (last+curr per Bank ID), build movement rows.
+    Each row has ContrSide = controllability on the 'counted' side
+    (e.g. for Transfer in, current month; for Transfer out, last month).
+    """
+    rows = []
+
+    def add_move(bank_id,
+                 mt_cc,
+                 cost_cat,
+                 mt_domain,
+                 movement,
+                 fte,
+                 emp_type,
+                 contr_side,
+                 from_mt_cc=None,
+                 to_mt_cc=None):
+        if pd.isna(fte) or fte == 0:
+            return
+        rows.append(
+            {
+                COL_BANK_ID: bank_id,
+                "MT_CC": mt_cc,
+                COL_COST_CAT: cost_cat,
+                COL_MT_DOMAIN: mt_domain,
+                "Movement": movement,
+                "FTE": float(fte),
+                "EmpType": emp_type,
+                "ContrSide": contr_side,
+                "From_MT_CC": from_mt_cc,
+                "To_MT_CC": to_mt_cc,
+            }
+        )
+
+    for _, r in combined.iterrows():
+        bid = r[COL_BANK_ID]
+
+        has_last = pd.notna(r.get("MT_CC_last"))
+        has_curr = pd.notna(r.get("MT_CC_curr"))
+
+        mt_cc_last = r.get("MT_CC_last")
+        mt_cc_curr = r.get("MT_CC_curr")
+
+        cost_last = r.get(f"{COL_COST_CAT}_last")
+        cost_curr = r.get(f"{COL_COST_CAT}_curr")
+
+        mt_last = r.get(f"{COL_MT_DOMAIN}_last")
+        mt_curr = r.get(f"{COL_MT_DOMAIN}_curr")
+
+        fte_last = r.get(f"{COL_FTE}_last")
+        fte_curr = r.get(f"{COL_FTE}_curr")
+
+        emp_last = r.get(f"{COL_EMP_TYPE_HC}_last")
+        emp_curr = r.get(f"{COL_EMP_TYPE_HC}_curr")
+
+        contr_last = r.get("ContrFlag_last")
+        contr_curr = r.get("ContrFlag_curr")
+
+        # 1) New / Non TnO: current only
+        if has_curr and not has_last:
+            if bid in rollup_ids:
+                movement = "Non TnO Joiners"
+            else:
+                movement = "New Joiners"
+
+            add_move(
+                bid,
+                mt_cc_curr,
+                cost_curr,
+                mt_curr,
+                movement,
+                fte_curr,
+                emp_curr,
+                contr_curr,
+            )
+
+        # 2) Left Bank: last only
+        elif has_last and not has_curr:
+            add_move(
+                bid,
+                mt_cc_last,
+                cost_last,
+                mt_last,
+                "Left Bank",
+                fte_last,
+                emp_last,
+                contr_last,
+            )
+
+        # 3) In both months
+        elif has_last and has_curr:
+            same_mtcc = mt_cc_last == mt_cc_curr
+
+            if same_mtcc:
+                # Conversion In: Non-Cont -> Cont
+                if contr_last == CONTR_VALUE_NON_CONT and contr_curr == CONTR_VALUE_CONT:
+                    add_move(
+                        bid,
+                        mt_cc_curr,
+                        cost_curr,
+                        mt_curr,
+                        "Conversion in",
+                        fte_curr,
+                        emp_curr,
+                        contr_curr,
+                    )
+                # Conversion Out: Cont -> Non-Cont
+                elif contr_last == CONTR_VALUE_CONT and contr_curr == CONTR_VALUE_NON_CONT:
+                    add_move(
+                        bid,
+                        mt_cc_curr,
+                        cost_curr,
+                        mt_curr,
+                        "Conversion out",
+                        fte_curr,
+                        emp_curr,
+                        contr_curr,
+                    )
+            else:
+                # Transfer out (side = last)
+                add_move(
+                    bid,
+                    mt_cc_last,
+                    cost_last,
+                    mt_last,
+                    "Transfer out",
+                    fte_last,
+                    emp_last,
+                    contr_last,
+                    from_mt_cc=None,
+                    to_mt_cc=mt_cc_curr,
+                )
+                # Transfer in (side = current)
+                add_move(
+                    bid,
+                    mt_cc_curr,
+                    cost_curr,
+                    mt_curr,
+                    "Transfer in",
+                    fte_curr,
+                    emp_curr,
+                    contr_curr,
+                    from_mt_cc=mt_cc_last,
+                    to_mt_cc=None,
+                )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                COL_BANK_ID,
+                "MT_CC",
+                COL_COST_CAT,
+                COL_MT_DOMAIN,
+                "Movement",
+                "FTE",
+                "EmpType",
+                "ContrSide",
+                "From_MT_CC",
+                "To_MT_CC",
+            ]
+        )
+
+    return pd.DataFrame(rows)
+
+
+def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build Comments per MT_CC for Controllable view only.
+    - Filter to ContrSide == 'Controllable'
+    - Round FTE numbers only in final text
+    """
+    if movements.empty:
+        return pd.DataFrame(columns=["MT_CC", "Comments"])
+
+    df = movements[movements["ContrSide"] == CONTR_VALUE_CONT].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["MT_CC", "Comments"])
+
+    df["is_AW"] = df["EmpType"].apply(is_agency_worker)
+    df["AW_FTE"] = np.where(df["is_AW"], df["FTE"], 0.0)
+    df["FTE_FTE"] = np.where(df["is_AW"], 0.0, df["FTE"])
+
+    totals = (
+        df.groupby(["MT_CC", COL_COST_CAT, COL_MT_DOMAIN, "Movement"], as_index=False)
+        .agg(
+            Total_FTE=("FTE", "sum"),
+            AW_FTE=("AW_FTE", "sum"),
+            FTE_FTE=("FTE_FTE", "sum"),
+        )
+    )
+
+    # Transfer details
+    tin = (
+        df[df["Movement"] == "Transfer in"]
+        .dropna(subset=["From_MT_CC"])
+        .groupby(["MT_CC", "From_MT_CC"], as_index=False)["FTE"]
+        .sum()
+    )
+    tout = (
+        df[df["Movement"] == "Transfer out"]
+        .dropna(subset=["To_MT_CC"])
+        .groupby(["MT_CC", "To_MT_CC"], as_index=False)["FTE"]
+        .sum()
+    )
+
+    tin_dict = defaultdict(list)
+    for _, r in tin.iterrows():
+        mt_cc = r["MT_CC"]
+        src = r["From_MT_CC"]
+        fte = round(r["FTE"])
+        if fte != 0:
+            tin_dict[mt_cc].append(f"{src}={fte}")
+
+    tout_dict = defaultdict(list)
+    for _, r in tout.iterrows():
+        mt_cc = r["MT_CC"]
+        dst = r["To_MT_CC"]
+        fte = round(r["FTE"])
+        if fte != 0:
+            tout_dict[mt_cc].append(f"{dst}={fte}")
+
+    movement_order = [
+        "New Joiners",
+        "Non TnO Joiners",
+        "Conversion in",
+        "Conversion out",
+        "Transfer in",
+        "Transfer out",
+        "Left Bank",
+    ]
+
+    rows = []
+
+    for mt_cc, grp in totals.groupby("MT_CC"):
+        grp = grp.set_index("Movement")
+
+        def vals(m):
+            if m not in grp.index:
+                return 0.0, 0.0, 0.0
+            row = grp.loc[m]
+            return float(row["Total_FTE"]), float(row["AW_FTE"]), float(row["FTE_FTE"])
+
+        lines = []
+        for m in movement_order:
+            tot, aw, fte = vals(m)
+            tot_r = round(tot)
+            aw_r = round(aw)
+            fte_r = round(fte)
+
+            if m == "Transfer in":
+                line = f"Transfer in = {tot_r}"
+                details = tin_dict.get(mt_cc)
+                if details:
+                    line += "(" + "; ".join(details) + ")"
+                lines.append(line)
+
+            elif m == "Transfer out":
+                line = f"Transfer out = {tot_r}"
+                details = tout_dict.get(mt_cc)
+                if details:
+                    line += "(" + "; ".join(details) + ")"
+                lines.append(line)
+
+            else:
+                line = f"{m} = {tot_r}(AW = {aw_r}; FTE = {fte_r})"
+                lines.append(line)
+
+        rows.append(
+            {
+                "MT_CC": mt_cc,
+                "Comments": "\n".join(lines),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def build_hc_summary_controllable(hc_curr: pd.DataFrame,
+                                  hc_last: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build HC summary (current/last) for controllable population only.
+    Round only at summary level.
+    """
+    curr_c = hc_curr[hc_curr["ContrFlag"] == CONTR_VALUE_CONT].copy()
+    last_c = hc_last[hc_last["ContrFlag"] == CONTR_VALUE_CONT].copy()
+
+    cols = [COL_COST_CAT, COL_MT_DOMAIN, "MT_CC"]
+
+    curr_sum = (
+        curr_c.groupby(cols, as_index=False)
+        .agg(HC_Current=(COL_FTE, "sum"))
+    )
+    last_sum = (
+        last_c.groupby(cols, as_index=False)
+        .agg(HC_Last=(COL_FTE, "sum"))
+    )
+
+    summary = curr_sum.merge(last_sum, on=cols, how="outer")
+    summary["HC_Current"] = summary["HC_Current"].fillna(0.0)
+    summary["HC_Last"]    = summary["HC_Last"].fillna(0.0)
+    summary["Net_Change"] = summary["HC_Current"] - summary["HC_Last"]
+
+    # Round summary values to nearest integer
+    summary["HC_Current"] = summary["HC_Current"].round(0).astype(int)
+    summary["HC_Last"]    = summary["HC_Last"].round(0).astype(int)
+    summary["Net_Change"] = summary["Net_Change"].round(0).astype(int)
+
+    return summary
+
+
+def sort_cost_cat_mt(summary: pd.DataFrame) -> pd.DataFrame:
+    cat_type = pd.CategoricalDtype(COST_CAT_ORDER, ordered=True)
+    out = summary.copy()
+    out[COL_COST_CAT] = out[COL_COST_CAT].astype(str)
+    out["__cat"] = out[COL_COST_CAT].astype(cat_type)
+    out = out.sort_values(["__cat", COL_MT_DOMAIN])
+    out.drop(columns=["__cat"], inplace=True)
+    return out
+
+
+def add_totals_rows(df: pd.DataFrame,
+                    curr_col: str,
+                    last_col: str,
+                    net_col: str) -> pd.DataFrame:
+    """
+    Add BAU TOTAL, CIO MGMT TOTAL, TPS TOTAL, PROJ TOTAL, GRAND TOTAL rows.
+    """
+    pieces = []
+    for cat in COST_CAT_ORDER:
+        block = df[df[COL_COST_CAT] == cat]
+        if block.empty:
+            continue
+        pieces.append(block)
+
+        total_curr = block[curr_col].sum()
+        total_last = block[last_col].sum()
+        total_net  = block[net_col].sum()
+        label = TOTAL_LABELS.get(cat, f"{cat.upper()} TOTAL")
+        pieces.append(
+            pd.DataFrame(
+                [{
+                    COL_COST_CAT: label,
+                    COL_MT_DOMAIN: "",
+                    curr_col: total_curr,
+                    last_col: total_last,
+                    net_col: total_net,
+                    "Comments": "",
+                }]
+            )
+        )
+
+    # Grand Total
+    total_curr = df[curr_col].sum()
+    total_last = df[last_col].sum()
+    total_net  = df[net_col].sum()
+    grand = pd.DataFrame(
+        [{
+            COL_COST_CAT: GRAND_TOTAL_LABEL,
+            COL_MT_DOMAIN: "",
+            curr_col: total_curr,
+            last_col: total_last,
+            net_col: total_net,
+            "Comments": "",
+        }]
+    )
+
+    if pieces:
+        final = pd.concat(pieces + [grand], ignore_index=True)
+    else:
+        final = grand
+
+    return final
+
+
+def style_totals_bold(output_path: Path):
+    """
+    Open the written workbook:
+      - Make TOTAL rows bold + bigger font
+      - Wrap text in Comments column for all rows
+    """
+    wb = load_workbook(output_path)
+    ws = wb[OUTPUT_SHEET_NAME]
+
+    bold_font = Font(bold=True, size=12)
+    wrap_alignment = Alignment(wrap_text=True)
+
+    total_labels = set(TOTAL_LABELS.values()) | {GRAND_TOTAL_LABEL}
+
+    # Find the Comments column index by header
+    comments_col_idx = None
+    for col in range(1, ws.max_column + 1):
+        header_val = ws.cell(row=1, column=col).value
+        if isinstance(header_val, str) and header_val.strip().lower() == "comments":
+            comments_col_idx = col
+            break
+
+    for row in range(2, ws.max_row + 1):
+        cell_val = ws[f"A{row}"].value
+
+        # Wrap comments text
+        if comments_col_idx is not None:
+            comments_cell = ws.cell(row=row, column=comments_col_idx)
+            comments_cell.alignment = wrap_alignment
+
+        # Bold + bigger font for TOTAL rows
+        if isinstance(cell_val, str) and cell_val in total_labels:
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.font = bold_font
+
+    wb.save(output_path)
+
+
+# ==============================================
+# MAIN
+# ==============================================
+
+def main():
+    print("Loading mapping & rollup...")
+    bf_map, emp_map, rollup = load_mapping_frames(MAPPING_WB_PATH)
+
+    print("Loading HC files from raw/ ...")
+    hc_curr_raw = pd.read_excel(CURRENT_HC_PATH)
+    hc_last_raw = pd.read_excel(LAST_HC_PATH)
+
+    print("Applying mappings to HC (org + ContrFlag)...")
+    hc_curr = apply_mappings_to_hc(hc_curr_raw, bf_map, emp_map)
+    hc_last = apply_mappings_to_hc(hc_last_raw, bf_map, emp_map)
+
+    print("Building employee snapshots...")
+    snap_curr = build_snapshot(hc_curr, "curr")
+    snap_last = build_snapshot(hc_last, "last")
+
+    print("Preparing rollup ID set...")
+    rollup_ids = (
+        rollup[COL_ROLLUP_ID]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    rollup_ids = set(rollup_ids)
+
+    print("Combining snapshots...")
+    combined = snap_last.merge(
+        snap_curr,
+        on=COL_BANK_ID,
+        how="outer",
+        suffixes=("_last", "_curr"),
+    )
+
+    print("Classifying movements...")
+    movements = classify_movements(combined, rollup_ids)
+
+    print("Building Controllable comments per MT-CC...")
+    comments_df = build_comments_for_controllable(movements)
+
+    print("Building Controllable HC summary...")
+    hc_summary = build_hc_summary_controllable(hc_curr, hc_last)
+
+    print("Merging HC summary with comments...")
+    merged = hc_summary.merge(comments_df, on="MT_CC", how="left")
+    merged["Comments"] = merged["Comments"].fillna("")
+
+    # Only keep comments when |Net_Change| > 10
+    merged.loc[merged["Net_Change"].abs() <= 10, "Comments"] = ""
+
+    # Sort by Cost Cat + MT Domain
+    merged = merged[
+        [COL_COST_CAT, COL_MT_DOMAIN, "HC_Current", "HC_Last", "Net_Change", "Comments"]
+    ]
+    merged = sort_cost_cat_mt(merged)
+
+    print("Adding TOTAL rows...")
+    merged_with_totals = add_totals_rows(
+        merged,
+        curr_col="HC_Current",
+        last_col="HC_Last",
+        net_col="Net_Change",
+    )
+
+    curr_label, last_label = get_date_labels()
+
+    # Rename HC columns to date labels and final headers
+    merged_with_totals.rename(
+        columns={
+            "HC_Current": curr_label,
+            "HC_Last": last_label,
+            "Net_Change": "Net Change",
+            COL_COST_CAT: "COST CAT",
+            COL_MT_DOMAIN: "MT DOMAIN",
+        },
+        inplace=True,
+    )
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    # File name: HC_<present-1>, e.g. HC_9Dec.xlsx
+    file_label = curr_label.replace("-", "")
+    output_path = OUTPUT_DIR / f"HC_{file_label}.xlsx"
+
+    print(f"Writing output to {output_path} ...")
+    merged_with_totals.to_excel(output_path, sheet_name=OUTPUT_SHEET_NAME, index=False)
+
+    print("Styling TOTAL rows + wrapping comments...")
+    style_totals_bold(output_path)
+
+    print("Done. Controllable summary generated.")
+
+
+if __name__ == "__main__":
+    main()
