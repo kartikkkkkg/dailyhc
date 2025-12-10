@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import calendar
 
 from openpyxl import load_workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 # ==============================================
 # CONFIG – EDIT THESE IF NEEDED
@@ -177,8 +177,7 @@ def build_snapshot(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
 def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
     """
     From combined snapshot (last+curr per Bank ID), build movement rows.
-    Each row has ContrSide = controllability on the 'counted' side
-    (e.g. for Transfer in, current month; for Transfer out, last month).
+    Each row has ContrSide = controllability on the 'counted' side.
     """
     rows = []
 
@@ -549,41 +548,96 @@ def add_totals_rows(df: pd.DataFrame,
     return final
 
 
-def style_totals_bold(output_path: Path):
+def style_professional(output_path: Path):
     """
-    Open the written workbook:
-      - Make TOTAL rows bold + bigger font
-      - Wrap text in Comments column for all rows
+    PRO VERSION (B):
+      - Wrap text only in rows that have comments
+      - Auto-height only for commented rows
+      - Compact rows for others
+      - Bold + larger TOTAL rows with grey fill
+      - Borders for all cells
+      - Auto-fit column widths
+      - Freeze top row + first 2 columns
     """
     wb = load_workbook(output_path)
     ws = wb[OUTPUT_SHEET_NAME]
 
     bold_font = Font(bold=True, size=12)
-    wrap_alignment = Alignment(wrap_text=True)
+    wrap_alignment = Alignment(wrap_text=True, vertical="top")
+    normal_alignment = Alignment(wrap_text=False, vertical="center")
+    total_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
 
     total_labels = set(TOTAL_LABELS.values()) | {GRAND_TOTAL_LABEL}
 
-    # Find the Comments column index by header
+    # Identify Comments column
     comments_col_idx = None
     for col in range(1, ws.max_column + 1):
-        header_val = ws.cell(row=1, column=col).value
-        if isinstance(header_val, str) and header_val.strip().lower() == "comments":
+        val = ws.cell(row=1, column=col).value
+        if isinstance(val, str) and val.strip().lower() == "comments":
             comments_col_idx = col
             break
 
-    for row in range(2, ws.max_row + 1):
-        cell_val = ws[f"A{row}"].value
+    # Apply borders + formatting row by row
+    for row in range(1, ws.max_row + 1):
+        costcat = ws[f"A{row}"].value  # COST CAT column (first col)
+        comments_text = ""
 
-        # Wrap comments text
-        if comments_col_idx is not None:
+        if comments_col_idx:
+            comments_text = ws.cell(row=row, column=comments_col_idx).value
+
+        has_comments = isinstance(comments_text, str) and comments_text.strip() != ""
+
+        # Default row height
+        if row == 1:
+            ws.row_dimensions[row].height = 22  # header
+        else:
+            ws.row_dimensions[row].height = 18
+
+        # Comment formatting
+        if row > 1 and comments_col_idx is not None:
             comments_cell = ws.cell(row=row, column=comments_col_idx)
-            comments_cell.alignment = wrap_alignment
+            if has_comments:
+                comments_cell.alignment = wrap_alignment
+                ws.row_dimensions[row].height = 60  # expand only where comments exist
+            else:
+                comments_cell.alignment = normal_alignment
 
-        # Bold + bigger font for TOTAL rows
-        if isinstance(cell_val, str) and cell_val in total_labels:
+        # TOTAL rows
+        if row > 1 and isinstance(costcat, str) and costcat in total_labels:
+            ws.row_dimensions[row].height = 25
             for col in range(1, ws.max_column + 1):
                 cell = ws.cell(row=row, column=col)
                 cell.font = bold_font
+                cell.fill = total_fill
+                cell.border = thin_border
+        else:
+            # Normal data rows (borders)
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+
+    # Auto-fit column widths
+    for col in range(1, ws.max_column + 1):
+        max_len = 0
+        col_letter = ws.cell(row=1, column=col).column_letter
+        for row in range(1, ws.max_row + 1):
+            val = ws.cell(row=row, column=col).value
+            if val is None:
+                continue
+            length = len(str(val))
+            if length > max_len:
+                max_len = length
+        ws.column_dimensions[col_letter].width = min(max_len + 3, 60)
+
+    # Freeze top row + first 2 columns (C2)
+    ws.freeze_panes = "C2"
 
     wb.save(output_path)
 
@@ -679,10 +733,10 @@ def main():
     print(f"Writing output to {output_path} ...")
     merged_with_totals.to_excel(output_path, sheet_name=OUTPUT_SHEET_NAME, index=False)
 
-    print("Styling TOTAL rows + wrapping comments...")
-    style_totals_bold(output_path)
+    print("Applying PROFESSIONAL formatting (Version B)...")
+    style_professional(output_path)
 
-    print("Done. Controllable summary generated.")
+    print("Done. Controllable summary generated (Version B).")
 
 
 if __name__ == "__main__":
