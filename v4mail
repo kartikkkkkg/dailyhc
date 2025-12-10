@@ -3,62 +3,73 @@ from pathlib import Path
 from datetime import date, timedelta
 import calendar
 from collections import defaultdict
+import ctypes
 
 import pandas as pd
 import numpy as np
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import win32com.client as win32
-import ctypes
 
-# =====================================================
-# PATHS / CONFIG
-# =====================================================
+# ==============================================
+# PATHS – works for .py and .exe
+# ==============================================
 
-# Detect base directory correctly for both .py and compiled .exe
 if getattr(sys, "frozen", False):
+    # Running as compiled EXE
     BASE_DIR = Path(sys.executable).parent
 else:
+    # Running as script
     BASE_DIR = Path(__file__).parent
 
 RAW_DIR = BASE_DIR / "raw"
 OUTPUT_DIR = BASE_DIR / "output"
 
-# <<< CHANGE THIS TO YOUR DAILY MSTR FILE NAME >>>
-CURRENT_HC_FILENAME = "Daily_HC_report_9Dec25.xlsx"  # TODO: replace with real name
+# ==============================================
+# CONFIG – EDIT THESE 2 LINES ONLY
+# ==============================================
+
+# Your daily MSTR HC file name (exact, inside raw/)
+CURRENT_HC_FILENAME = "YOUR_MSTR_DAILY_HC_FILE.xlsx"  # TODO: change this
+
+# Email recipients (you can change this later)
+EMAIL_TO = "kartik.gupta@sc.com"
+
+# ==============================================
+# CONSTANTS
+# ==============================================
 
 CURRENT_HC_PATH = RAW_DIR / CURRENT_HC_FILENAME
-LAST_HC_PATH = RAW_DIR / "hc_last_month.xlsx"
+LAST_HC_PATH    = RAW_DIR / "hc_last_month.xlsx"
 MAPPING_WB_PATH = RAW_DIR / "mapping.xlsx"
 
 MAPPING_SHEET_NAME = "mapping"
-ROLLUP_SHEET_NAME = "rollup"
+ROLLUP_SHEET_NAME  = "rollup"
 
 OUTPUT_SHEET_NAME = "New_summary"
 
 # Column names in HC files
-COL_BANK_ID = "Bank ID"
-COL_BF_L6 = "Business Function Lvl 6"
+COL_BANK_ID     = "Bank ID"
+COL_BF_L6       = "Business Function Lvl 6"
 COL_EMP_TYPE_HC = "Employment Type"
-COL_FTE = "FTE"
+COL_FTE         = "FTE"
 
 # Column names in mapping sheet
-COL_MAP_BF_L6 = "Business Function Lvl 6"
-COL_COST_CAT = "Cost Cat"
-COL_MT_DOMAIN = "MT Domain"
-COL_MT1_DOMAIN = "MT-1 Domain"
+COL_MAP_BF_L6   = "Business Function Lvl 6"
+COL_COST_CAT    = "Cost Cat"
+COL_MT_DOMAIN   = "MT Domain"
+COL_MT1_DOMAIN  = "MT-1 Domain"
 COL_MAP_EMP_TYP = "Employment Type"
-COL_CONTR = "Contr/Non-Contr"
+COL_CONTR       = "Contr/Non-Contr"
 
 # Rollup columns
-COL_ROLLUP_ID = "Employee ID"
+COL_ROLLUP_ID   = "Employee ID"
 
-# Contr flag values
-CONTR_VALUE_CONT = "Controllable"
+CONTR_VALUE_CONT     = "Controllable"
 CONTR_VALUE_NON_CONT = "Non-Controllable"
 
-# Summary grouping order
 COST_CAT_ORDER = ["BAU", "CIO Mgmt", "TPS", "Proj"]
+
 TOTAL_LABELS = {
     "BAU": "BAU TOTAL",
     "CIO Mgmt": "CIO MGMT TOTAL",
@@ -67,13 +78,11 @@ TOTAL_LABELS = {
 }
 GRAND_TOTAL_LABEL = "GRAND TOTAL"
 
-# Comments threshold
 COMMENT_THRESHOLD = 10
 
-
-# =====================================================
+# ==============================================
 # DATE LABELS
-# =====================================================
+# ==============================================
 
 def get_date_labels():
     today = date.today()
@@ -104,10 +113,9 @@ def get_unique_output_path(base_path: Path) -> Path:
             return new_path
         i += 1
 
-
-# =====================================================
+# ==============================================
 # HELPERS
-# =====================================================
+# ==============================================
 
 def is_agency_worker(emp_type: str) -> bool:
     if not isinstance(emp_type, str):
@@ -118,7 +126,7 @@ def is_agency_worker(emp_type: str) -> bool:
 
 def load_mapping_frames(mapping_wb_path: Path):
     mapping = pd.read_excel(mapping_wb_path, sheet_name=MAPPING_SHEET_NAME)
-    rollup = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
+    rollup  = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
 
     bf_map = mapping[
         [COL_MAP_BF_L6, COL_COST_CAT, COL_MT_DOMAIN, COL_MT1_DOMAIN]
@@ -173,6 +181,9 @@ def build_snapshot(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
     snap.rename(columns={f"{COL_BANK_ID}_{suffix}": COL_BANK_ID}, inplace=True)
     return snap
 
+# ==============================================
+# MOVEMENTS + COMMENTS
+# ==============================================
 
 def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
     rows = []
@@ -228,7 +239,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
         contr_last = r.get("ContrFlag_last")
         contr_curr = r.get("ContrFlag_curr")
 
-        # New & Non TnO
         if has_curr and not has_last:
             if bid in rollup_ids:
                 movement = "Non TnO Joiners"
@@ -246,7 +256,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                 contr_curr,
             )
 
-        # Left Bank
         elif has_last and not has_curr:
             add_move(
                 bid,
@@ -259,7 +268,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                 contr_last,
             )
 
-        # In both
         elif has_last and has_curr:
             same_mtcc = mt_cc_last == mt_cc_curr
 
@@ -287,7 +295,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                         contr_curr,
                     )
             else:
-                # Transfer out
                 add_move(
                     bid,
                     mt_cc_last,
@@ -300,7 +307,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                     from_mt_cc=None,
                     to_mt_cc=mt_cc_curr,
                 )
-                # Transfer in
                 add_move(
                     bid,
                     mt_cc_curr,
@@ -394,6 +400,7 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
     ]
 
     rows = []
+
     for mt_cc, grp in totals.groupby("MT_CC"):
         grp = grp.set_index("Movement")
 
@@ -421,4 +428,451 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
 
             elif m == "Transfer out":
                 details = tout_dict.get(mt_cc)
-                {}
+                if details:
+                    detail_str = "; ".join(details)
+                    line = f"Transfer out = {tot_r}({detail_str})"
+                else:
+                    line = f"Transfer out = {tot_r}"
+                lines.append(line)
+
+            else:
+                line = f"{m} = {tot_r}(AW = {aw_r} & FTE = {fte_r})"
+                lines.append(line)
+
+        rows.append(
+            {
+                "MT_CC": mt_cc,
+                "Comments": "\n".join(lines),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+# ==============================================
+# SUMMARY BUILDING
+# ==============================================
+
+def build_hc_summary_controllable(hc_curr: pd.DataFrame,
+                                  hc_last: pd.DataFrame) -> pd.DataFrame:
+    curr_c = hc_curr[hc_curr["ContrFlag"] == CONTR_VALUE_CONT].copy()
+    last_c = hc_last[hc_last["ContrFlag"] == CONTR_VALUE_CONT].copy()
+
+    cols = [COL_COST_CAT, COL_MT_DOMAIN, "MT_CC"]
+
+    curr_sum = (
+        curr_c.groupby(cols, as_index=False)
+        .agg(HC_Current=(COL_FTE, "sum"))
+    )
+    last_sum = (
+        last_c.groupby(cols, as_index=False)
+        .agg(HC_Last=(COL_FTE, "sum"))
+    )
+
+    summary = curr_sum.merge(last_sum, on=cols, how="outer")
+    summary["HC_Current"] = summary["HC_Current"].fillna(0.0)
+    summary["HC_Last"]    = summary["HC_Last"].fillna(0.0)
+    summary["Net_Change"] = summary["HC_Current"] - summary["HC_Last"]
+
+    summary["HC_Current"] = summary["HC_Current"].round(0).astype(int)
+    summary["HC_Last"]    = summary["HC_Last"].round(0).astype(int)
+    summary["Net_Change"] = summary["Net_Change"].round(0).astype(int)
+
+    return summary
+
+
+def sort_cost_cat_mt(summary: pd.DataFrame) -> pd.DataFrame:
+    cat_type = pd.CategoricalDtype(COST_CAT_ORDER, ordered=True)
+    out = summary.copy()
+    out[COL_COST_CAT] = out[COL_COST_CAT].astype(str)
+    out["__cat"] = out[COL_COST_CAT].astype(cat_type)
+    out = out.sort_values(["__cat", COL_MT_DOMAIN])
+    out.drop(columns=["__cat"], inplace=True)
+    return out
+
+
+def add_totals_rows(df: pd.DataFrame,
+                    curr_col: str,
+                    last_col: str,
+                    net_col: str) -> pd.DataFrame:
+    pieces = []
+    for cat in COST_CAT_ORDER:
+        block = df[df[COL_COST_CAT] == cat]
+        if block.empty:
+            continue
+        pieces.append(block)
+
+        total_curr = int(block[curr_col].sum())
+        total_last = int(block[last_col].sum())
+        total_net  = total_curr - total_last
+        label = TOTAL_LABELS.get(cat, f"{cat.upper()} TOTAL")
+        pieces.append(
+            pd.DataFrame(
+                [{
+                    COL_COST_CAT: label,
+                    COL_MT_DOMAIN: "",
+                    curr_col: total_curr,
+                    last_col: total_last,
+                    net_col: total_net,
+                    "Comments": "",
+                }]
+            )
+        )
+
+    total_curr = int(df[curr_col].sum())
+    total_last = int(df[last_col].sum())
+    total_net  = total_curr - total_last
+    grand = pd.DataFrame(
+        [{
+            COL_COST_CAT: GRAND_TOTAL_LABEL,
+            COL_MT_DOMAIN: "",
+            curr_col: total_curr,
+            last_col: total_last,
+            net_col: total_net,
+            "Comments": "",
+        }]
+    )
+
+    if pieces:
+        final = pd.concat(pieces + [grand], ignore_index=True)
+    else:
+        final = grand
+
+    return final
+
+# ==============================================
+# EXCEL FORMATTING
+# ==============================================
+
+def style_professional(output_path: Path):
+    wb = load_workbook(output_path)
+    ws = wb[OUTPUT_SHEET_NAME]
+
+    bold_font = Font(bold=True, size=12)
+    header_font = Font(bold=True, size=11)
+    wrap_alignment = Alignment(wrap_text=True, vertical="top")
+    normal_alignment = Alignment(wrap_text=False, vertical="center")
+    total_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    total_labels = set(TOTAL_LABELS.values()) | {GRAND_TOTAL_LABEL}
+
+    comments_col_idx = None
+    for col in range(1, ws.max_column + 1):
+        val = ws.cell(row=1, column=col).value
+        if isinstance(val, str) and val.strip().lower() == "comments":
+            comments_col_idx = col
+            break
+
+    for col in range(1, ws.max_column + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    ws.row_dimensions[1].height = 22
+
+    for row in range(2, ws.max_row + 1):
+        costcat = ws[f"A{row}"].value
+        comments_text = ""
+        if comments_col_idx:
+            comments_text = ws.cell(row=row, column=comments_col_idx).value
+
+        has_comments = isinstance(comments_text, str) and comments_text.strip() != ""
+
+        ws.row_dimensions[row].height = 18
+
+        if comments_col_idx is not None:
+            comments_cell = ws.cell(row=row, column=comments_col_idx)
+            if has_comments:
+                comments_cell.alignment = wrap_alignment
+                n_lines = comments_text.count("\n") + 1
+                ws.row_dimensions[row].height = min(18 + 12 * n_lines, 120)
+            else:
+                comments_cell.alignment = normal_alignment
+
+        if isinstance(costcat, str) and costcat in total_labels:
+            ws.row_dimensions[row].height = 25
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.font = bold_font
+                cell.fill = total_fill
+                cell.border = thin_border
+        else:
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+
+    for col in range(1, ws.max_column + 1):
+        max_len = 0
+        col_letter = ws.cell(row=1, column=col).column_letter
+        for row in range(1, ws.max_row + 1):
+            val = ws.cell(row=row, column=col).value
+            if val is None:
+                continue
+            length = len(str(val))
+            if length > max_len:
+                max_len = length
+        ws.column_dimensions[col_letter].width = min(max_len + 3, 60)
+
+    if comments_col_idx:
+        comments_col_letter = ws.cell(row=1, column=comments_col_idx).column_letter
+        current_width = ws.column_dimensions[comments_col_letter].width or 20
+        ws.column_dimensions[comments_col_letter].width = current_width + 3
+
+    ws.freeze_panes = "C2"
+    wb.save(output_path)
+
+# ==============================================
+# HTML TABLE FOR EMAIL
+# ==============================================
+
+def build_html_table_from_summary(df: pd.DataFrame,
+                                  curr_label: str,
+                                  last_label: str) -> str:
+    """
+    Build a styled HTML table (no NaN, no literal \n) from final summary.
+    """
+    df_html = df.copy()
+
+    # Replace NaN with blanks
+    df_html = df_html.replace({np.nan: ""})
+
+    # Convert \n in Comments to <br>
+    if "Comments" in df_html.columns:
+        df_html["Comments"] = (
+            df_html["Comments"]
+            .astype(str)
+            .replace("nan", "")
+            .str.replace("\n", "<br>")
+        )
+
+    # Column order we expect
+    col_order = ["COST CAT", "MT DOMAIN", curr_label, last_label, "Net Change", "Comments"]
+    col_order = [c for c in col_order if c in df_html.columns]
+    df_html = df_html[col_order]
+
+    # Basic styles
+    table_style = (
+        "border-collapse:collapse;"
+        "font-family:Calibri,Arial,sans-serif;"
+        "font-size:11px;"
+    )
+    th_style = (
+        "border:1px solid #999999;"
+        "padding:4px 6px;"
+        "background-color:#F0F0F0;"
+        "font-weight:bold;"
+        "text-align:center;"
+    )
+    td_base = (
+        "border:1px solid #999999;"
+        "padding:4px 6px;"
+        "vertical-align:top;"
+    )
+
+    # Approx column widths (px)
+    col_widths = {
+        "COST CAT": 90,
+        "MT DOMAIN": 120,
+        curr_label: 70,
+        last_label: 70,
+        "Net Change": 70,
+        "Comments": 260,
+    }
+
+    total_labels = set(TOTAL_LABELS.values())
+    grand_label = GRAND_TOTAL_LABEL
+
+    html = [f'<table style="{table_style}">']
+
+    # Header row
+    html.append("<tr>")
+    for col in col_order:
+        width = col_widths.get(col, 80)
+        html.append(
+            f'<th style="{th_style}width:{width}px;">{col}</th>'
+        )
+    html.append("</tr>")
+
+    # Data rows
+    for _, row in df_html.iterrows():
+        costcat = str(row.get("COST CAT", ""))
+
+        # Row style for totals
+        if costcat == grand_label:
+            row_bg = "#D0D0D0"
+            row_weight = "bold"
+        elif costcat in total_labels:
+            row_bg = "#E0E0E0"
+            row_weight = "bold"
+        else:
+            row_bg = "#FFFFFF"
+            row_weight = "normal"
+
+        html.append("<tr>")
+        for col in col_order:
+            val = row[col]
+
+            # Ensure string, no 'nan'
+            if isinstance(val, float) and np.isnan(val):
+                val = ""
+            val = "" if val is None else str(val)
+            if val == "nan":
+                val = ""
+
+            style = td_base + f"background-color:{row_bg};font-weight:{row_weight};"
+
+            # Alignment for numeric columns
+            if col in (curr_label, last_label, "Net Change"):
+                style += "text-align:right;"
+            elif col in ("Comments",):
+                style += "text-align:left;"
+            else:
+                style += "text-align:left;"
+
+            # Comments already has <br>, so don't escape
+            html.append(f'<td style="{style}">{val}</td>')
+        html.append("</tr>")
+
+    html.append("</table>")
+    return "\n".join(html)
+
+# ==============================================
+# EMAIL – HTML TABLE IN BODY
+# ==============================================
+
+def send_summary_email_with_html_table(output_path: Path, curr_label: str):
+    """
+    Reads the New_summary sheet, builds a styled HTML table, and sends an
+    Outlook email with the table in the body (no attachment).
+    """
+    df = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_NAME)
+    html_table = build_html_table_from_summary(df, curr_label, curr_label.replace("-", ""))  # second arg not used in table
+
+    outlook = win32.Dispatch("Outlook.Application")
+    mail = outlook.CreateItem(0)
+
+    mail.To = EMAIL_TO
+    mail.Subject = "Daily Headcount"
+    mail.BodyFormat = 2  # HTML
+
+    body_html = f"""
+    <p>Hi all,<br>
+    PFB Headcount as of {curr_label}</p>
+    {html_table}
+    """
+
+    mail.HTMLBody = body_html
+    mail.Send()
+
+    ctypes.windll.user32.MessageBoxW(
+        0,
+        f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
+        "Daily HC",
+        0
+    )
+
+# ==============================================
+# MAIN
+# ==============================================
+
+def main():
+    print("Loading mapping & rollup...")
+    bf_map, emp_map, rollup = load_mapping_frames(MAPPING_WB_PATH)
+
+    print("Loading HC files from raw/ ...")
+    hc_curr_raw = pd.read_excel(CURRENT_HC_PATH)
+    hc_last_raw = pd.read_excel(LAST_HC_PATH)
+
+    print("Applying mappings to HC...")
+    hc_curr = apply_mappings_to_hc(hc_curr_raw, bf_map, emp_map)
+    hc_last = apply_mappings_to_hc(hc_last_raw, bf_map, emp_map)
+
+    print("Building snapshots...")
+    snap_curr = build_snapshot(hc_curr, "curr")
+    snap_last = build_snapshot(hc_last, "last")
+
+    print("Preparing rollup IDs...")
+    rollup_ids = (
+        rollup[COL_ROLLUP_ID]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    rollup_ids = set(rollup_ids)
+
+    print("Combining snapshots...")
+    combined = snap_last.merge(
+        snap_curr,
+        on=COL_BANK_ID,
+        how="outer",
+        suffixes=("_last", "_curr"),
+    )
+
+    print("Classifying movements...")
+    movements = classify_movements(combined, rollup_ids)
+
+    print("Building comments...")
+    comments_df = build_comments_for_controllable(movements)
+
+    print("Building HC summary (controllable)...")
+    hc_summary = build_hc_summary_controllable(hc_curr, hc_last)
+
+    print("Merging summary with comments...")
+    merged = hc_summary.merge(comments_df, on="MT_CC", how="left")
+    merged["Comments"] = merged["Comments"].fillna("")
+
+    merged.loc[merged["Net_Change"].abs() <= COMMENT_THRESHOLD, "Comments"] = ""
+
+    merged = merged[
+        [COL_COST_CAT, COL_MT_DOMAIN, "HC_Current", "HC_Last", "Net_Change", "Comments"]
+    ]
+    merged = sort_cost_cat_mt(merged)
+
+    print("Adding totals rows...")
+    merged_with_totals = add_totals_rows(
+        merged,
+        curr_col="HC_Current",
+        last_col="HC_Last",
+        net_col="Net_Change",
+    )
+
+    curr_label, last_label = get_date_labels()
+
+    merged_with_totals.rename(
+        columns={
+            "HC_Current": curr_label,
+            "HC_Last": last_label,
+            "Net_Change": "Net Change",
+            COL_COST_CAT: "COST CAT",
+            COL_MT_DOMAIN: "MT DOMAIN",
+        },
+        inplace=True,
+    )
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    file_label = curr_label.replace("-", "")
+    base_output_path = OUTPUT_DIR / f"HC_{file_label}.xlsx"
+    output_path = get_unique_output_path(base_output_path)
+
+    print(f"Writing output to {output_path} ...")
+    merged_with_totals.to_excel(output_path, sheet_name=OUTPUT_SHEET_NAME, index=False)
+
+    print("Applying Excel formatting...")
+    style_professional(output_path)
+
+    print("Sending email with HTML table...")
+    send_summary_email_with_html_table(output_path, curr_label)
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
