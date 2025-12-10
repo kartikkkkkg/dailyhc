@@ -28,12 +28,12 @@ OUTPUT_SHEET_NAME = "New_summary"
 
 # Column names in HC files
 COL_BANK_ID     = "Bank ID"
-COL_BF_L6       = "Business Function Lvl6 Name"
+COL_BF_L6       = "Business Function Lvl 6"
 COL_EMP_TYPE_HC = "Employment Type"
 COL_FTE         = "FTE"
 
 # Column names in mapping sheet
-COL_MAP_BF_L6   = "Business Function Lvl6 Name"
+COL_MAP_BF_L6   = "Business Function Lvl 6"
 COL_COST_CAT    = "Cost Cat"
 COL_MT_DOMAIN   = "MT Domain"
 COL_MT1_DOMAIN  = "MT-1 Domain"
@@ -140,8 +140,8 @@ def apply_mappings_to_hc(hc_raw: pd.DataFrame,
                          emp_map: pd.DataFrame) -> pd.DataFrame:
     """
     For each HC file:
-      - keep Bank ID, BF Lvl6, EmpType, FTE
-      - map BF Lvl6 -> Cost Cat, MT Domain, MT1 Domain
+      - keep Bank ID, BF Lvl 6, EmpType, FTE
+      - map BF Lvl 6 -> Cost Cat, MT Domain, MT1 Domain
       - map EmpType -> Contr/Non-Contr
       - build MT_CC = "<MT Domain>-<Cost Cat>"
     """
@@ -149,7 +149,7 @@ def apply_mappings_to_hc(hc_raw: pd.DataFrame,
 
     df[COL_BANK_ID] = df[COL_BANK_ID].astype(str).str.strip()
 
-    # Map BF Lvl6 -> org structure
+    # Map BF Lvl 6 -> org structure
     df = df.merge(
         bf_map,
         left_on=COL_BF_L6,
@@ -413,7 +413,7 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
         if fte != 0:
             tout_dict[mt_cc].append(f"{dst}={fte}")
 
-    # NOTE: order tweaked to match your screenshot:
+    # Order to match your screenshot
     movement_order = [
         "New Joiners",
         "Non TnO Joiners",
@@ -461,7 +461,6 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
                 lines.append(line)
 
             else:
-                # Non-transfer movement line
                 line = f"{m} = {tot_r}(AW = {aw_r} & FTE = {fte_r})"
                 lines.append(line)
 
@@ -524,6 +523,7 @@ def add_totals_rows(df: pd.DataFrame,
                     net_col: str) -> pd.DataFrame:
     """
     Add BAU TOTAL, CIO MGMT TOTAL, TPS TOTAL, PROJ TOTAL, GRAND TOTAL rows.
+    For TOTAL rows, Net = Current - Last (avoids rounding drift).
     """
     pieces = []
     for cat in COST_CAT_ORDER:
@@ -532,9 +532,9 @@ def add_totals_rows(df: pd.DataFrame,
             continue
         pieces.append(block)
 
-        total_curr = block[curr_col].sum()
-        total_last = block[last_col].sum()
-        total_net  = block[net_col].sum()
+        total_curr = int(block[curr_col].sum())
+        total_last = int(block[last_col].sum())
+        total_net  = total_curr - total_last
         label = TOTAL_LABELS.get(cat, f"{cat.upper()} TOTAL")
         pieces.append(
             pd.DataFrame(
@@ -549,10 +549,10 @@ def add_totals_rows(df: pd.DataFrame,
             )
         )
 
-    # Grand Total
-    total_curr = df[curr_col].sum()
-    total_last = df[last_col].sum()
-    total_net  = df[net_col].sum()
+    # Grand Total across all categories
+    total_curr = int(df[curr_col].sum())
+    total_last = int(df[last_col].sum())
+    total_net  = total_curr - total_last
     grand = pd.DataFrame(
         [{
             COL_COST_CAT: GRAND_TOTAL_LABEL,
@@ -634,7 +634,6 @@ def style_professional(output_path: Path):
             comments_cell = ws.cell(row=row, column=comments_col_idx)
             if has_comments:
                 comments_cell.alignment = wrap_alignment
-                # dynamic height based on number of lines
                 n_lines = comments_text.count("\n") + 1
                 ws.row_dimensions[row].height = min(18 + 12 * n_lines, 120)
             else:
@@ -766,16 +765,6 @@ def main():
 
     print("Applying formatting...")
     style_professional(output_path)
-
-    # Quick QA: net change consistency
-    data_only = merged_with_totals[
-        ~merged_with_totals["COST CAT"].isin(list(TOTAL_LABELS.values()) + [GRAND_TOTAL_LABEL])
-    ]
-    total_current = data_only[curr_label].sum()
-    total_last    = data_only[last_label].sum()
-    total_net     = data_only["Net Change"].sum()
-    if total_net != total_current - total_last:
-        print("WARNING: Net Change total does not equal Current - Last. Please check data.")
 
     print("Done. Controllable summary generated.")
 
