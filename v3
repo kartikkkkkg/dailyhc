@@ -1,0 +1,107 @@
+def style_premium(output_path: Path):
+    """
+    PREMIUM VERSION (C):
+      - Dark header with white bold text
+      - Wrap text only in rows that have comments
+      - Auto-height only for commented rows
+      - Compact rows for others
+      - Bold + larger TOTAL rows with stronger grey fill
+      - Borders for all cells
+      - Light banding for data rows
+      - Auto-fit column widths
+      - Freeze top row + first 2 columns
+    """
+    wb = load_workbook(output_path)
+    ws = wb[OUTPUT_SHEET_NAME]
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="404040", end_color="404040", fill_type="solid")
+    bold_font = Font(bold=True, size=12)
+    wrap_alignment = Alignment(wrap_text=True, vertical="top")
+    normal_alignment = Alignment(wrap_text=False, vertical="center")
+
+    total_fill = PatternFill(start_color="C0C0C0", end_color="C0C0C0", fill_type="solid")
+    band_fill = PatternFill(start_color="F7F7F7", end_color="F7F7F7", fill_type="solid")
+
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    total_labels = set(TOTAL_LABELS.values()) | {GRAND_TOTAL_LABEL}
+
+    # Identify Comments column
+    comments_col_idx = None
+    for col in range(1, ws.max_column + 1):
+        val = ws.cell(row=1, column=col).value
+        if isinstance(val, str) and val.strip().lower() == "comments":
+            comments_col_idx = col
+            break
+
+    # Style header row
+    for col in range(1, ws.max_column + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    ws.row_dimensions[1].height = 24
+
+    # Data rows
+    band_toggle = False
+    for row in range(2, ws.max_row + 1):
+        costcat = ws[f"A{row}"].value
+        comments_text = ""
+        if comments_col_idx:
+            comments_text = ws.cell(row=row, column=comments_col_idx).value
+
+        has_comments = isinstance(comments_text, str) and comments_text.strip() != ""
+
+        # Default height
+        ws.row_dimensions[row].height = 18
+
+        # Comment formatting
+        if comments_col_idx is not None:
+            comments_cell = ws.cell(row=row, column=comments_col_idx)
+            if has_comments:
+                comments_cell.alignment = wrap_alignment
+                ws.row_dimensions[row].height = 60
+            else:
+                comments_cell.alignment = normal_alignment
+
+        # TOTAL rows
+        if isinstance(costcat, str) and costcat in total_labels:
+            ws.row_dimensions[row].height = 25
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.font = bold_font
+                cell.fill = total_fill
+                cell.border = thin_border
+        else:
+            # Banding for normal rows
+            band_toggle = not band_toggle
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+                if band_toggle:
+                    cell.fill = band_fill
+
+    # Auto-fit column widths
+    for col in range(1, ws.max_column + 1):
+        max_len = 0
+        col_letter = ws.cell(row=1, column=col).column_letter
+        for row in range(1, ws.max_row + 1):
+            val = ws.cell(row=row, column=col).value
+            if val is None:
+                continue
+            length = len(str(val))
+            if length > max_len:
+                max_len = length
+        ws.column_dimensions[col_letter].width = min(max_len + 3, 60)
+
+    # Freeze top row + first 2 columns
+    ws.freeze_panes = "C2"
+
+    wb.save(output_path)
