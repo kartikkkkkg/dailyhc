@@ -1,62 +1,64 @@
-import pandas as pd
-import numpy as np
-from collections import defaultdict
+import sys
 from pathlib import Path
 from datetime import date, timedelta
 import calendar
-import ctypes
+from collections import defaultdict
 
+import pandas as pd
+import numpy as np
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+import win32com.client as win32
+import ctypes
 
-import win32com.client as win32  # Outlook & Excel COM
+# =====================================================
+# PATHS / CONFIG
+# =====================================================
 
-# ==============================================
-# CONFIG – EDIT THESE IF NEEDED
-# ==============================================
+# Detect base directory correctly for both .py and compiled .exe
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
 
-BASE_DIR = Path(__file__).parent if "__file__" in globals() else Path.cwd()
 RAW_DIR = BASE_DIR / "raw"
 OUTPUT_DIR = BASE_DIR / "output"
 
-# <<< IMPORTANT: SET YOUR DAILY MSTR FILE NAME HERE >>>
-# This is the file your team will drop into raw/ every day.
-CURRENT_HC_FILENAME = "YOUR_MSTR_DAILY_HC_FILE.xlsx"  # TODO: change this
+# <<< CHANGE THIS TO YOUR DAILY MSTR FILE NAME >>>
+CURRENT_HC_FILENAME = "Daily_HC_report_9Dec25.xlsx"  # TODO: replace with real name
 
-CURRENT_HC_PATH = RAW_DIR / CURRENT_HC_FILENAME      # today's HC (Tech & Ops)
-LAST_HC_PATH    = RAW_DIR / "hc_last_month.xlsx"     # last month-end HC
-MAPPING_WB_PATH = RAW_DIR / "mapping.xlsx"           # has sheets: mapping, rollup
+CURRENT_HC_PATH = RAW_DIR / CURRENT_HC_FILENAME
+LAST_HC_PATH = RAW_DIR / "hc_last_month.xlsx"
+MAPPING_WB_PATH = RAW_DIR / "mapping.xlsx"
 
 MAPPING_SHEET_NAME = "mapping"
-ROLLUP_SHEET_NAME  = "rollup"
+ROLLUP_SHEET_NAME = "rollup"
 
 OUTPUT_SHEET_NAME = "New_summary"
 
 # Column names in HC files
-COL_BANK_ID     = "Bank ID"
-COL_BF_L6       = "Business Function Lvl 6"
+COL_BANK_ID = "Bank ID"
+COL_BF_L6 = "Business Function Lvl 6"
 COL_EMP_TYPE_HC = "Employment Type"
-COL_FTE         = "FTE"
+COL_FTE = "FTE"
 
 # Column names in mapping sheet
-COL_MAP_BF_L6   = "Business Function Lvl 6"
-COL_COST_CAT    = "Cost Cat"
-COL_MT_DOMAIN   = "MT Domain"
-COL_MT1_DOMAIN  = "MT-1 Domain"
+COL_MAP_BF_L6 = "Business Function Lvl 6"
+COL_COST_CAT = "Cost Cat"
+COL_MT_DOMAIN = "MT Domain"
+COL_MT1_DOMAIN = "MT-1 Domain"
 COL_MAP_EMP_TYP = "Employment Type"
-COL_CONTR       = "Contr/Non-Contr"
+COL_CONTR = "Contr/Non-Contr"
 
 # Rollup columns
-COL_ROLLUP_ID   = "Employee ID"              # same logical as Bank ID
+COL_ROLLUP_ID = "Employee ID"
 
-# Which string in Contr/Non-Contr means controllable?
-CONTR_VALUE_CONT     = "Controllable"
-CONTR_VALUE_NON_CONT = "Non-Controllable"    # for future use
+# Contr flag values
+CONTR_VALUE_CONT = "Controllable"
+CONTR_VALUE_NON_CONT = "Non-Controllable"
 
-# Cost Cat order in summary
+# Summary grouping order
 COST_CAT_ORDER = ["BAU", "CIO Mgmt", "TPS", "Proj"]
-
-# Total row labels (ALL CAPS)
 TOTAL_LABELS = {
     "BAU": "BAU TOTAL",
     "CIO Mgmt": "CIO MGMT TOTAL",
@@ -65,20 +67,15 @@ TOTAL_LABELS = {
 }
 GRAND_TOTAL_LABEL = "GRAND TOTAL"
 
-# Show comments only when |Net Change| > threshold
+# Comments threshold
 COMMENT_THRESHOLD = 10
 
 
-# ==============================================
-# DATE LABELS FOR COLUMN HEADERS + FILE NAME
-# ==============================================
+# =====================================================
+# DATE LABELS
+# =====================================================
 
 def get_date_labels():
-    """
-    Return:
-        curr_label: today - 1 (e.g. '9-Dec')
-        last_label: last month end (e.g. '30-Nov')
-    """
     today = date.today()
     curr_date = today - timedelta(days=1)
 
@@ -98,9 +95,6 @@ def get_date_labels():
 
 
 def get_unique_output_path(base_path: Path) -> Path:
-    """
-    If base_path exists, append _1, _2, ... until free.
-    """
     if not base_path.exists():
         return base_path
     i = 1
@@ -111,12 +105,11 @@ def get_unique_output_path(base_path: Path) -> Path:
         i += 1
 
 
-# ==============================================
+# =====================================================
 # HELPERS
-# ==============================================
+# =====================================================
 
 def is_agency_worker(emp_type: str) -> bool:
-    """Return True if employment type should be treated as AW."""
     if not isinstance(emp_type, str):
         return False
     s = emp_type.lower()
@@ -124,16 +117,13 @@ def is_agency_worker(emp_type: str) -> bool:
 
 
 def load_mapping_frames(mapping_wb_path: Path):
-    """Load mapping + rollup from mapping workbook."""
     mapping = pd.read_excel(mapping_wb_path, sheet_name=MAPPING_SHEET_NAME)
-    rollup  = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
+    rollup = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
 
-    # BF → CostCat / MT Domain mapping
     bf_map = mapping[
         [COL_MAP_BF_L6, COL_COST_CAT, COL_MT_DOMAIN, COL_MT1_DOMAIN]
     ].drop_duplicates()
 
-    # EmpType → ContrFlag mapping
     emp_map = mapping[
         [COL_MAP_EMP_TYP, COL_CONTR]
     ].drop_duplicates()
@@ -144,18 +134,9 @@ def load_mapping_frames(mapping_wb_path: Path):
 def apply_mappings_to_hc(hc_raw: pd.DataFrame,
                          bf_map: pd.DataFrame,
                          emp_map: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each HC file:
-      - keep Bank ID, BF Lvl 6, EmpType, FTE
-      - map BF Lvl 6 -> Cost Cat, MT Domain, MT1 Domain
-      - map EmpType -> Contr/Non-Contr
-      - build MT_CC = "<MT Domain>-<Cost Cat>"
-    """
     df = hc_raw[[COL_BANK_ID, COL_BF_L6, COL_EMP_TYPE_HC, COL_FTE]].copy()
-
     df[COL_BANK_ID] = df[COL_BANK_ID].astype(str).str.strip()
 
-    # Map BF Lvl 6 -> org structure
     df = df.merge(
         bf_map,
         left_on=COL_BF_L6,
@@ -163,7 +144,6 @@ def apply_mappings_to_hc(hc_raw: pd.DataFrame,
         how="left",
     )
 
-    # Map EmpType -> ContrFlag
     df = df.merge(
         emp_map,
         left_on=COL_EMP_TYPE_HC,
@@ -172,15 +152,12 @@ def apply_mappings_to_hc(hc_raw: pd.DataFrame,
     )
 
     df.rename(columns={COL_CONTR: "ContrFlag"}, inplace=True)
-
-    # Build MT_CC e.g. "Ops CIB-BAU"
     df["MT_CC"] = df[COL_MT_DOMAIN].astype(str) + "-" + df[COL_COST_CAT].astype(str)
 
     return df
 
 
 def build_snapshot(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
-    """One row per Bank ID with MT_CC / FTE / EmpType / ContrFlag."""
     cols = [
         COL_BANK_ID,
         "MT_CC",
@@ -198,10 +175,6 @@ def build_snapshot(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
 
 
 def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
-    """
-    From combined snapshot (last+curr per Bank ID), build movement rows.
-    Each row has ContrSide = controllability on the 'counted' side.
-    """
     rows = []
 
     def add_move(bank_id,
@@ -255,7 +228,7 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
         contr_last = r.get("ContrFlag_last")
         contr_curr = r.get("ContrFlag_curr")
 
-        # 1) New / Non TnO: current only
+        # New & Non TnO
         if has_curr and not has_last:
             if bid in rollup_ids:
                 movement = "Non TnO Joiners"
@@ -273,7 +246,7 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                 contr_curr,
             )
 
-        # 2) Left Bank: last only
+        # Left Bank
         elif has_last and not has_curr:
             add_move(
                 bid,
@@ -286,12 +259,11 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                 contr_last,
             )
 
-        # 3) In both months
+        # In both
         elif has_last and has_curr:
             same_mtcc = mt_cc_last == mt_cc_curr
 
             if same_mtcc:
-                # Conversion In: Non-Cont -> Cont
                 if contr_last == CONTR_VALUE_NON_CONT and contr_curr == CONTR_VALUE_CONT:
                     add_move(
                         bid,
@@ -303,7 +275,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                         emp_curr,
                         contr_curr,
                     )
-                # Conversion Out: Cont -> Non-Cont
                 elif contr_last == CONTR_VALUE_CONT and contr_curr == CONTR_VALUE_NON_CONT:
                     add_move(
                         bid,
@@ -316,7 +287,7 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                         contr_curr,
                     )
             else:
-                # Transfer out (side = last)
+                # Transfer out
                 add_move(
                     bid,
                     mt_cc_last,
@@ -329,7 +300,7 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
                     from_mt_cc=None,
                     to_mt_cc=mt_cc_curr,
                 )
-                # Transfer in (side = current)
+                # Transfer in
                 add_move(
                     bid,
                     mt_cc_curr,
@@ -363,12 +334,6 @@ def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
 
 
 def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build Comments per MT_CC for Controllable view only.
-    - Filter to ContrSide == 'Controllable'
-    - Round FTE numbers only in final text
-    - Format exactly like your manual block
-    """
     if movements.empty:
         return pd.DataFrame(columns=["MT_CC", "Comments"])
 
@@ -389,7 +354,6 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    # Transfer details
     tin = (
         df[df["Movement"] == "Transfer in"]
         .dropna(subset=["From_MT_CC"])
@@ -419,7 +383,6 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
         if fte != 0:
             tout_dict[mt_cc].append(f"{dst}={fte}")
 
-    # Order to match your screenshot
     movement_order = [
         "New Joiners",
         "Non TnO Joiners",
@@ -431,7 +394,6 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
     ]
 
     rows = []
-
     for mt_cc, grp in totals.groupby("MT_CC"):
         grp = grp.set_index("Movement")
 
@@ -459,392 +421,4 @@ def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
 
             elif m == "Transfer out":
                 details = tout_dict.get(mt_cc)
-                if details:
-                    detail_str = "; ".join(details)
-                    line = f"Transfer out = {tot_r}({detail_str})"
-                else:
-                    line = f"Transfer out = {tot_r}"
-                lines.append(line)
-
-            else:
-                line = f"{m} = {tot_r}(AW = {aw_r} & FTE = {fte_r})"
-                lines.append(line)
-
-        rows.append(
-            {
-                "MT_CC": mt_cc,
-                "Comments": "\n".join(lines),
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
-def build_hc_summary_controllable(hc_curr: pd.DataFrame,
-                                  hc_last: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build HC summary (current/last) for controllable population only.
-    Round only at summary level.
-    """
-    curr_c = hc_curr[hc_curr["ContrFlag"] == CONTR_VALUE_CONT].copy()
-    last_c = hc_last[hc_last["ContrFlag"] == CONTR_VALUE_CONT].copy()
-
-    cols = [COL_COST_CAT, COL_MT_DOMAIN, "MT_CC"]
-
-    curr_sum = (
-        curr_c.groupby(cols, as_index=False)
-        .agg(HC_Current=(COL_FTE, "sum"))
-    )
-    last_sum = (
-        last_c.groupby(cols, as_index=False)
-        .agg(HC_Last=(COL_FTE, "sum"))
-    )
-
-    summary = curr_sum.merge(last_sum, on=cols, how="outer")
-    summary["HC_Current"] = summary["HC_Current"].fillna(0.0)
-    summary["HC_Last"]    = summary["HC_Last"].fillna(0.0)
-    summary["Net_Change"] = summary["HC_Current"] - summary["HC_Last"]
-
-    # Round summary values to nearest integer
-    summary["HC_Current"] = summary["HC_Current"].round(0).astype(int)
-    summary["HC_Last"]    = summary["HC_Last"].round(0).astype(int)
-    summary["Net_Change"] = summary["Net_Change"].round(0).astype(int)
-
-    return summary
-
-
-def sort_cost_cat_mt(summary: pd.DataFrame) -> pd.DataFrame:
-    cat_type = pd.CategoricalDtype(COST_CAT_ORDER, ordered=True)
-    out = summary.copy()
-    out[COL_COST_CAT] = out[COL_COST_CAT].astype(str)
-    out["__cat"] = out[COL_COST_CAT].astype(cat_type)
-    out = out.sort_values(["__cat", COL_MT_DOMAIN])
-    out.drop(columns=["__cat"], inplace=True)
-    return out
-
-
-def add_totals_rows(df: pd.DataFrame,
-                    curr_col: str,
-                    last_col: str,
-                    net_col: str) -> pd.DataFrame:
-    """
-    Add BAU TOTAL, CIO MGMT TOTAL, TPS TOTAL, PROJ TOTAL, GRAND TOTAL rows.
-    For TOTAL rows, Net = Current - Last (avoids rounding drift).
-    """
-    pieces = []
-    for cat in COST_CAT_ORDER:
-        block = df[df[COL_COST_CAT] == cat]
-        if block.empty:
-            continue
-        pieces.append(block)
-
-        total_curr = int(block[curr_col].sum())
-        total_last = int(block[last_col].sum())
-        total_net  = total_curr - total_last
-        label = TOTAL_LABELS.get(cat, f"{cat.upper()} TOTAL")
-        pieces.append(
-            pd.DataFrame(
-                [{
-                    COL_COST_CAT: label,
-                    COL_MT_DOMAIN: "",
-                    curr_col: total_curr,
-                    last_col: total_last,
-                    net_col: total_net,
-                    "Comments": "",
-                }]
-            )
-        )
-
-    # Grand Total across all categories
-    total_curr = int(df[curr_col].sum())
-    total_last = int(df[last_col].sum())
-    total_net  = total_curr - total_last
-    grand = pd.DataFrame(
-        [{
-            COL_COST_CAT: GRAND_TOTAL_LABEL,
-            COL_MT_DOMAIN: "",
-            curr_col: total_curr,
-            last_col: total_last,
-            net_col: total_net,
-            "Comments": "",
-        }]
-    )
-
-    if pieces:
-        final = pd.concat(pieces + [grand], ignore_index=True)
-    else:
-        final = grand
-
-    return final
-
-
-def style_professional(output_path: Path):
-    """
-    Formatting:
-      - Wrap text only in rows that have comments
-      - Dynamic row height based on number of lines in comments
-      - Compact rows for others
-      - Bold + larger TOTAL rows with grey fill
-      - Borders for all cells
-      - Auto-fit column widths
-      - Freeze top row + first 2 columns
-    """
-    wb = load_workbook(output_path)
-    ws = wb[OUTPUT_SHEET_NAME]
-
-    bold_font = Font(bold=True, size=12)
-    header_font = Font(bold=True, size=11)
-    wrap_alignment = Alignment(wrap_text=True, vertical="top")
-    normal_alignment = Alignment(wrap_text=False, vertical="center")
-    total_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
-    )
-
-    total_labels = set(TOTAL_LABELS.values()) | {GRAND_TOTAL_LABEL}
-
-    # Identify Comments column
-    comments_col_idx = None
-    for col in range(1, ws.max_column + 1):
-        val = ws.cell(row=1, column=col).value
-        if isinstance(val, str) and val.strip().lower() == "comments":
-            comments_col_idx = col
-            break
-
-    # Header styling
-    for col in range(1, ws.max_column + 1):
-        cell = ws.cell(row=1, column=col)
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
-    ws.row_dimensions[1].height = 22
-
-    # Data rows
-    for row in range(2, ws.max_row + 1):
-        costcat = ws[f"A{row}"].value
-        comments_text = ""
-        if comments_col_idx:
-            comments_text = ws.cell(row=row, column=comments_col_idx).value
-
-        has_comments = isinstance(comments_text, str) and comments_text.strip() != ""
-
-        # Default row height
-        ws.row_dimensions[row].height = 18
-
-        # Comment formatting + dynamic height
-        if comments_col_idx is not None:
-            comments_cell = ws.cell(row=row, column=comments_col_idx)
-            if has_comments:
-                comments_cell.alignment = wrap_alignment
-                n_lines = comments_text.count("\n") + 1
-                ws.row_dimensions[row].height = min(18 + 12 * n_lines, 120)
-            else:
-                comments_cell.alignment = normal_alignment
-
-        # TOTAL rows
-        if isinstance(costcat, str) and costcat in total_labels:
-            ws.row_dimensions[row].height = 25
-            for col in range(1, ws.max_column + 1):
-                cell = ws.cell(row=row, column=col)
-                cell.font = bold_font
-                cell.fill = total_fill
-                cell.border = thin_border
-        else:
-            # normal row borders
-            for col in range(1, ws.max_column + 1):
-                cell = ws.cell(row=row, column=col)
-                cell.border = thin_border
-
-    # Auto-fit column widths
-    for col in range(1, ws.max_column + 1):
-        max_len = 0
-        col_letter = ws.cell(row=1, column=col).column_letter
-        for row in range(1, ws.max_row + 1):
-            val = ws.cell(row=row, column=col).value
-            if val is None:
-                continue
-            length = len(str(val))
-            if length > max_len:
-                max_len = length
-        ws.column_dimensions[col_letter].width = min(max_len + 3, 60)
-
-    # Increase Comments column width by ~3 units (~0.75 cm)
-    if comments_col_idx:
-        comments_col_letter = ws.cell(row=1, column=comments_col_idx).column_letter
-        current_width = ws.column_dimensions[comments_col_letter].width
-        if current_width is None:
-            current_width = 20
-        ws.column_dimensions[comments_col_letter].width = current_width + 3
-
-    # Freeze top row + first 2 columns
-    ws.freeze_panes = "C2"
-
-    wb.save(output_path)
-
-
-# ==============================================
-# EMAIL: copy table from Excel and send via Outlook
-# ==============================================
-
-def send_summary_email_with_table(output_path: Path, curr_label: str):
-    """
-    Opens the generated HC Excel file, copies the New_summary sheet table,
-    and pastes it into an Outlook email body (no attachment).
-    """
-    # 1) Start Outlook
-    outlook = win32.Dispatch("Outlook.Application")
-    mail = outlook.CreateItem(0)  # 0 = MailItem
-
-    # TODO: UPDATE THIS LINE WITH REAL RECIPIENTS (semicolon-separated)
-    mail.To = "person1@yourbank.com; person2@yourbank.com"
-
-    mail.Subject = "Daily Headcount"
-    mail.BodyFormat = 2  # 2 = HTML
-
-    # Initial body text (we'll paste the table after this)
-    body_html = f"<p>Hi all,<br>PFB Headcount as of {curr_label}</p><br>"
-    mail.HTMLBody = body_html
-
-    # 2) Open Excel and copy the table from New_summary
-    excel = win32.Dispatch("Excel.Application")
-    excel.Visible = False
-
-    wb = excel.Workbooks.Open(str(output_path))
-    ws = wb.Worksheets(OUTPUT_SHEET_NAME)
-
-    # Copy the used range (everything with data on New_summary)
-    used_range = ws.UsedRange
-    used_range.Copy()
-
-    # 3) Paste into the email body using WordEditor (same as manual paste)
-    inspector = mail.GetInspector()
-    word_editor = inspector.WordEditor
-    selection = word_editor.Application.Selection
-
-    # Move cursor to end and paste
-    selection.EndKey(6)  # 6 = wdStory (end of document)
-    selection.Paste()
-
-    # Cleanup Excel
-    excel.CutCopyMode = False
-    wb.Close(SaveChanges=False)
-    excel.Quit()
-
-    # 4) Send the email
-    mail.Send()
-
-    # 5) Show success popup
-    ctypes.windll.user32.MessageBoxW(
-        0,
-        f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
-        "Daily HC",
-        0
-    )
-
-
-# ==============================================
-# MAIN
-# ==============================================
-
-def main():
-    print("Loading mapping & rollup...")
-    bf_map, emp_map, rollup = load_mapping_frames(MAPPING_WB_PATH)
-
-    print("Loading HC files from raw/ ...")
-    hc_curr_raw = pd.read_excel(CURRENT_HC_PATH)
-    hc_last_raw = pd.read_excel(LAST_HC_PATH)
-
-    print("Applying mappings to HC (org + ContrFlag)...")
-    hc_curr = apply_mappings_to_hc(hc_curr_raw, bf_map, emp_map)
-    hc_last = apply_mappings_to_hc(hc_last_raw, bf_map, emp_map)
-
-    print("Building employee snapshots...")
-    snap_curr = build_snapshot(hc_curr, "curr")
-    snap_last = build_snapshot(hc_last, "last")
-
-    print("Preparing rollup ID set...")
-    rollup_ids = (
-        rollup[COL_ROLLUP_ID]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .unique()
-        .tolist()
-    )
-    rollup_ids = set(rollup_ids)
-
-    print("Combining snapshots...")
-    combined = snap_last.merge(
-        snap_curr,
-        on=COL_BANK_ID,
-        how="outer",
-        suffixes=("_last", "_curr"),
-    )
-
-    print("Classifying movements...")
-    movements = classify_movements(combined, rollup_ids)
-
-    print("Building Controllable comments per MT-CC...")
-    comments_df = build_comments_for_controllable(movements)
-
-    print("Building Controllable HC summary...")
-    hc_summary = build_hc_summary_controllable(hc_curr, hc_last)
-
-    print("Merging HC summary with comments...")
-    merged = hc_summary.merge(comments_df, on="MT_CC", how="left")
-    merged["Comments"] = merged["Comments"].fillna("")
-
-    # Only keep comments when |Net_Change| > COMMENT_THRESHOLD
-    merged.loc[merged["Net_Change"].abs() <= COMMENT_THRESHOLD, "Comments"] = ""
-
-    # Sort by Cost Cat + MT Domain
-    merged = merged[
-        [COL_COST_CAT, COL_MT_DOMAIN, "HC_Current", "HC_Last", "Net_Change", "Comments"]
-    ]
-    merged = sort_cost_cat_mt(merged)
-
-    print("Adding TOTAL rows...")
-    merged_with_totals = add_totals_rows(
-        merged,
-        curr_col="HC_Current",
-        last_col="HC_Last",
-        net_col="Net_Change",
-    )
-
-    curr_label, last_label = get_date_labels()
-
-    # Rename HC columns to date labels and final headers
-    merged_with_totals.rename(
-        columns={
-            "HC_Current": curr_label,
-            "HC_Last": last_label,
-            "Net_Change": "Net Change",
-            COL_COST_CAT: "COST CAT",
-            COL_MT_DOMAIN: "MT DOMAIN",
-        },
-        inplace=True,
-    )
-
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    file_label = curr_label.replace("-", "")
-    base_output_path = OUTPUT_DIR / f"HC_{file_label}.xlsx"
-    output_path = get_unique_output_path(base_output_path)
-
-    print(f"Writing output to {output_path} ...")
-    merged_with_totals.to_excel(output_path, sheet_name=OUTPUT_SHEET_NAME, index=False)
-
-    print("Applying formatting...")
-    style_professional(output_path)
-
-    print("Sending email with pasted table...")
-    send_summary_email_with_table(output_path, curr_label)
-
-    print("Done. Controllable summary generated & emailed.")
-
-
-if __name__ == "__main__":
-    main()
+                {}
