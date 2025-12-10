@@ -1,0 +1,43 @@
+def send_summary_email_with_table(output_path: Path, curr_label: str):
+    """
+    Reads the New_summary sheet from the generated HC Excel file,
+    converts it to an HTML table, and sends it in the Outlook email body (no attachment).
+    """
+    # 1) Read the final summary table from Excel
+    df = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_NAME)
+
+    # Optional: if you ever want to drop the Comments column from the email, you can do:
+    # df = df.drop(columns=["Comments"], errors="ignore")
+
+    # Convert dataframe to an HTML table with borders
+    table_html = df.to_html(index=False, border=1, justify="center")
+
+    # 2) Start Outlook
+    outlook = win32.Dispatch("Outlook.Application")
+    mail = outlook.CreateItem(0)  # 0 = MailItem
+
+    # TODO: UPDATE THIS LINE WITH REAL RECIPIENTS (semicolon-separated)
+    mail.To = "person1@yourbank.com; person2@yourbank.com"
+
+    mail.Subject = "Daily Headcount"
+    mail.BodyFormat = 2  # 2 = HTML
+
+    # Intro + table
+    body_html = f"""
+    <p>Hi all,<br>
+    PFB Headcount as of {curr_label}</p>
+    {table_html}
+    """
+
+    mail.HTMLBody = body_html
+
+    # 3) Send the email
+    mail.Send()
+
+    # 4) Show success popup
+    ctypes.windll.user32.MessageBoxW(
+        0,
+        f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
+        "Daily HC",
+        0
+    )
