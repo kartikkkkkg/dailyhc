@@ -32,7 +32,7 @@ OUTPUT_DIR = BASE_DIR / "output"
 # Your daily MSTR HC file name (exact, inside raw/)
 CURRENT_HC_FILENAME = "YOUR_MSTR_DAILY_HC_FILE.xlsx"  # TODO: change this
 
-# Email recipients (you can change this later)
+# Email recipients (semicolon-separated; you can change later)
 EMAIL_TO = "kartik.gupta@sc.com"
 
 # ==============================================
@@ -718,7 +718,6 @@ def build_html_table_from_summary(df: pd.DataFrame,
         for col in col_order:
             val = row[col]
 
-            # Ensure string, no 'nan'
             if isinstance(val, float) and np.isnan(val):
                 val = ""
             val = "" if val is None else str(val)
@@ -735,7 +734,6 @@ def build_html_table_from_summary(df: pd.DataFrame,
             else:
                 style += "text-align:left;"
 
-            # Comments already has <br>, so don't escape
             html.append(f'<td style="{style}">{val}</td>')
         html.append("</tr>")
 
@@ -746,13 +744,13 @@ def build_html_table_from_summary(df: pd.DataFrame,
 # EMAIL – HTML TABLE IN BODY
 # ==============================================
 
-def send_summary_email_with_html_table(output_path: Path, curr_label: str):
+def send_summary_email_with_html_table(output_path: Path, curr_label: str, last_label: str):
     """
     Reads the New_summary sheet, builds a styled HTML table, and sends an
     Outlook email with the table in the body (no attachment).
     """
     df = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_NAME)
-    html_table = build_html_table_from_summary(df, curr_label, curr_label.replace("-", ""))  # second arg not used in table
+    html_table = build_html_table_from_summary(df, curr_label, last_label)
 
     outlook = win32.Dispatch("Outlook.Application")
     mail = outlook.CreateItem(0)
@@ -869,7 +867,7 @@ def main():
     style_professional(output_path)
 
     print("Sending email with HTML table...")
-    send_summary_email_with_html_table(output_path, curr_label)
+    send_summary_email_with_html_table(output_path, curr_label, last_label)
 
     print("Done.")
 
