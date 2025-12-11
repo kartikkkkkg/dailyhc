@@ -1,53 +1,39 @@
-def send_summary_email_with_table(output_path: Path, curr_label: str):
-    """
-    Opens Excel, copies the New_summary sheet's used range exactly as formatted,
-    pastes it into an Outlook email body (like manual Ctrl+C / Ctrl+V),
-    and sends the mail automatically.
-    """
+def get_date_labels():
+    today = date.today()
 
-    # ---------------- Excel: open summary and copy table ----------------
-    excel = win32.Dispatch("Excel.Application")
-    excel.Visible = False  # keep Excel in background
+    # ------------------------------------------
+    # 1. Determine "current" HC date = last WORKING day
+    # ------------------------------------------
+    # Step 1: start with yesterday
+    curr_date = today - timedelta(days=1)
 
-    wb = excel.Workbooks.Open(str(output_path))
-    ws = wb.Worksheets(OUTPUT_SHEET_NAME)
+    # Step 2: If yesterday is Saturday/Sunday -> go back to Friday
+    while curr_date.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        curr_date -= timedelta(days=1)
 
-    used_rng = ws.UsedRange
-    used_rng.Copy()  # copies formatting + everything
+    # ------------------------------------------
+    # 2. Determine LAST MONTH-END working day
+    # ------------------------------------------
+    # Find previous month
+    if curr_date.month == 1:
+        last_month = 12
+        year = curr_date.year - 1
+    else:
+        last_month = curr_date.month - 1
+        year = curr_date.year
 
-    # ---------------- Outlook: create mail & ensure WordEditor exists ----
-    outlook = win32.Dispatch("Outlook.Application")  # starts Outlook if not open
-    mail = outlook.CreateItem(0)  # MailItem
+    # calendar month-end
+    last_day = calendar.monthrange(year, last_month)[1]
+    last_month_end = date(year, last_month, last_day)
 
-    # IMPORTANT: set initial body *before* Display so header appears above table
-    mail.Subject = "Daily Headcount"
-    mail.To = "person1@yourbank.com; person2@yourbank.com"  # TODO: put real IDs here
-    mail.HTMLBody = f"<p>Hi all,<br>PFB Headcount as of {curr_label}</p><br>"
+    # If month-end is weekend -> roll back to nearest weekday
+    while last_month_end.weekday() >= 5:  # Weekend
+        last_month_end -= timedelta(days=1)
 
-    # Display is REQUIRED so Outlook attaches a WordEditor to this mail
-    mail.Display()  # window may flash briefly
+    # ------------------------------------------
+    # Labels in dd-MMM format
+    # ------------------------------------------
+    curr_label = curr_date.strftime("%d-%b").lstrip("0")
+    last_label = last_month_end.strftime("%d-%b").lstrip("0")
 
-    # Now inspector + WordEditor are guaranteed
-    inspector = mail.GetInspector()          # NOTE: parentheses!
-    word_editor = inspector.WordEditor
-
-    # Move cursor to end and paste the Excel range
-    selection = word_editor.Application.Selection
-    selection.EndKey(6)  # 6 = wdStory (end of document)
-    selection.Paste()    # exact Excel table, same formatting
-
-    # ---------------- Cleanup Excel & send mail --------------------------
-    excel.CutCopyMode = False
-    wb.Close(SaveChanges=False)
-    excel.Quit()
-
-    # Auto-send the email
-    mail.Send()
-
-    # Success popup
-    ctypes.windll.user32.MessageBoxW(
-        0,
-        f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
-        "Daily HC",
-        0
-    )
+    return curr_label, last_label
