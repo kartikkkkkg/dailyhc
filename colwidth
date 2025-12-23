@@ -1,7 +1,0 @@
-# Increase Comments column width by ~3 units (~0.75 cm)
-if comments_col_idx:
-    comments_col_letter = ws.cell(row=1, column=comments_col_idx).column_letter
-    current_width = ws.column_dimensions[comments_col_letter].width
-    if current_width is None:
-        current_width = 20  # fallback in case auto-fit didn't set width
-    ws.column_dimensions[comments_col_letter].width = current_width + 3

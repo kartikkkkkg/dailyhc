@@ -1,0 +1,40 @@
+import pandas as pd
+from pathlib import Path
+
+RAW_FILE = Path("raw/YOUR_MSTR_DAILY_HC_FILE.xlsx")
+MAPPING_FILE = Path("raw/mapping.xlsx")
+
+print("\n=== Loading files ===")
+hc = pd.read_excel(RAW_FILE)
+mapping = pd.read_excel(MAPPING_FILE, sheet_name="Project")   # must match EXACT sheet name
+
+print("\n=== RAW HC Position ID sample ===")
+print(hc["Position ID"].dropna().astype(str).head(20))
+
+print("\n=== PROJECT MAP sample ===")
+print(mapping.head())
+
+print("\n=== Unique PROJECT MAP Position IDs ===")
+print(mapping["Position ID"].dropna().astype(str).unique()[:20])
+
+# Standardize both to string
+hc_pos = hc["Position ID"].dropna().astype(str).str.strip()
+map_pos = mapping["Position ID"].dropna().astype(str).str.strip()
+
+print("\n=== COUNT CHECK ===")
+print("Total HC Position IDs:", len(hc_pos))
+print("Total Project Mapping Position IDs:", len(map_pos))
+
+common = set(hc_pos).intersection(set(map_pos))
+only_in_hc = set(hc_pos) - set(map_pos)
+only_in_map = set(map_pos) - set(hc_pos)
+
+print("\n=== MATCHING IDs ===")
+print("Count matching Position IDs:", len(common))
+print("Sample:", list(common)[:20])
+
+print("\n=== IDs in HC but NOT in PROJECT MAP ===")
+print(list(only_in_hc)[:20])
+
+print("\n=== IDs in PROJECT MAP but NOT in HC ===")
+print(list(only_in_map)[:20])
