@@ -1,0 +1,74 @@
+def load_mapping_frames(mapping_wb_path: Path):
+    # Load mapping sheets
+    mapping = pd.read_excel(mapping_wb_path, sheet_name=MAPPING_SHEET_NAME)
+    rollup  = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
+    project_map = pd.read_excel(mapping_wb_path, sheet_name=PROJECT_SHEET_NAME)
+
+    # --- FIX: Normalize Position ID in Project Map ---
+    project_map[COL_POSITION_ID] = (
+        project_map[COL_POSITION_ID]
+        .astype(str)
+        .str.replace(".0", "", regex=False)
+        .str.strip()
+    )
+
+    project_map = project_map[[COL_POSITION_ID, "Project Name"]].drop_duplicates()
+
+    # Business Function mapping
+    bf_map = mapping[
+        [COL_MAP_BF_L6, COL_COST_CAT, COL_MT_DOMAIN, COL_MT1_DOMAIN]
+    ].drop_duplicates()
+
+    # Employment type → Controllable/Non-controllable
+    emp_map = mapping[
+        [COL_MAP_EMP_TYP, COL_CONTR]
+    ].drop_duplicates()
+
+    return bf_map, emp_map, rollup, project_map
+
+2. Updated apply_mappings_to_hc()
+
+def apply_mappings_to_hc(hc_raw, bf_map, emp_map, project_map):
+
+    df = hc_raw[
+        [COL_BANK_ID, COL_BF_L6, COL_EMP_TYPE_HC, COL_FTE, COL_POSITION_ID]
+    ].copy()
+
+    df[COL_BANK_ID] = df[COL_BANK_ID].astype(str).str.strip()
+
+    # --- FIX: Normalize Position ID from HC file (float → int → str) ---
+    df[COL_POSITION_ID] = (
+        df[COL_POSITION_ID]
+        .apply(lambda x: str(int(float(x))) if pd.notna(x) else "")
+        .str.strip()
+    )
+
+    # Merge Business Function mapping
+    df = df.merge(
+        bf_map,
+        left_on=COL_BF_L6,
+        right_on=COL_MAP_BF_L6,
+        how="left"
+    )
+
+    # Merge Employment Type → Controllable/Non-controllable mapping
+    df = df.merge(
+        emp_map,
+        left_on=COL_EMP_TYPE_HC,
+        right_on=COL_MAP_EMP_TYP,
+        how="left"
+    )
+
+    # Merge Project mapping (Position ID → Project Name)
+    df = df.merge(
+        project_map,
+        on=COL_POSITION_ID,
+        how="left"
+    )
+
+    df.rename(columns={COL_CONTR: "ContrFlag"}, inplace=True)
+
+    # Construct MT_CC field
+    df["MT_CC"] = df[COL_MT_DOMAIN].astype(str) + "-" + df[COL_COST_CAT].astype(str)
+
+    return df
