@@ -80,14 +80,22 @@ GRAND_TOTAL_LABEL = "GRAND TOTAL"
 
 COMMENT_THRESHOLD = 10
 
-# ==============================================
-# DATE LABELS
-# ==============================================
-
 def get_date_labels():
     today = date.today()
+    # ------------------------------------------
+    # 1. Determine "current" HC date = last WORKING day
+    # ------------------------------------------
+    # Step 1: start with yesterday
     curr_date = today - timedelta(days=1)
 
+    # Step 2: If yesterday is Saturday/Sunday -> go back to Friday
+    while curr_date.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        curr_date -= timedelta(days=1)
+
+    # ------------------------------------------
+    # 2. Determine LAST MONTH-END working day
+    # ------------------------------------------
+    # Find previous month
     if curr_date.month == 1:
         last_month = 12
         year = curr_date.year - 1
@@ -95,13 +103,21 @@ def get_date_labels():
         last_month = curr_date.month - 1
         year = curr_date.year
 
+    # calendar month-end
     last_day = calendar.monthrange(year, last_month)[1]
     last_month_end = date(year, last_month, last_day)
 
+    # If month-end is weekend -> roll back to nearest weekday
+    while last_month_end.weekday() >= 5:  # Weekend
+        last_month_end -= timedelta(days=1)
+
+    # ------------------------------------------
+    # Labels in dd-MMM format
+    # ------------------------------------------
     curr_label = curr_date.strftime("%d-%b").lstrip("0")
     last_label = last_month_end.strftime("%d-%b").lstrip("0")
-    return curr_label, last_label
 
+    return curr_label, last_label
 
 def get_unique_output_path(base_path: Path) -> Path:
     if not base_path.exists():
