@@ -11,9 +11,9 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import win32com.client as win32
 
-# ==============================================
+# ============================================================
 # PATHS – works for .py and .exe
-# ==============================================
+# ============================================================
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -23,16 +23,16 @@ else:
 RAW_DIR = BASE_DIR / "raw"
 OUTPUT_DIR = BASE_DIR / "output"
 
-# ==============================================
-# CONFIG – EDIT THESE LINES ONLY
-# ==============================================
+# ============================================================
+# CONFIG
+# ============================================================
 
 CURRENT_HC_FILENAME = "YOUR_MSTR_DAILY_HC_FILE.xlsx"
-EMAIL_TO = "kartik.gupta@sc.com"
+EMAIL_TO = "kartik.gupta@sc.com; person2@sc.com; person3@sc.com"
 
-# ==============================================
+# ============================================================
 # CONSTANTS
-# ==============================================
+# ============================================================
 
 CURRENT_HC_PATH = RAW_DIR / CURRENT_HC_FILENAME
 LAST_HC_PATH    = RAW_DIR / "hc_last_month.xlsx"
@@ -48,7 +48,7 @@ COL_BANK_ID     = "Bank ID"
 COL_BF_L6       = "Business Function Lvl 6"
 COL_EMP_TYPE_HC = "Employment Type"
 COL_FTE         = "FTE"
-COL_POSITION_ID = "Position ID"   # HC file column
+COL_POSITION_ID = "Position ID"         # NEW
 
 COL_MAP_BF_L6   = "Business Function Lvl 6"
 COL_COST_CAT    = "Cost Cat"
@@ -59,14 +59,10 @@ COL_CONTR       = "Contr/Non-Contr"
 
 COL_ROLLUP_ID   = "Employee ID"
 
-COL_PROJ_POSID  = "Position ID"    # Mapping sheet
-COL_PROJ_NAME   = "Project Name"
-
 CONTR_VALUE_CONT     = "Controllable"
 CONTR_VALUE_NON_CONT = "Non-Controllable"
 
 COST_CAT_ORDER = ["BAU", "CIO Mgmt", "TPS", "Proj"]
-
 TOTAL_LABELS = {
     "BAU": "BAU TOTAL",
     "CIO Mgmt": "CIO MGMT TOTAL",
@@ -77,153 +73,187 @@ GRAND_TOTAL_LABEL = "GRAND TOTAL"
 
 COMMENT_THRESHOLD = 10
 
-# ==============================================
-# DATE LABEL LOGIC (Working-day logic)
-# ==============================================
+# ============================================================
+# DATE LABELS (WORKING DAY LOGIC)
+# ============================================================
 
 def get_date_labels():
     today = date.today()
     curr_date = today - timedelta(days=1)
 
-    while curr_date.weekday() >= 5:  # Sat=5, Sun=6
+    while curr_date.weekday() >= 5:
         curr_date -= timedelta(days=1)
 
     if curr_date.month == 1:
         last_month = 12
-        last_year  = curr_date.year - 1
+        year = curr_date.year - 1
     else:
         last_month = curr_date.month - 1
-        last_year  = curr_date.year
+        year = curr_date.year
 
-    last_day = calendar.monthrange(last_year, last_month)[1]
-    last_month_end = date(last_year, last_month, last_day)
+    last_day = calendar.monthrange(year, last_month)[1]
+    last_month_end = date(year, last_month, last_day)
 
     while last_month_end.weekday() >= 5:
         last_month_end -= timedelta(days=1)
 
     curr_label = curr_date.strftime("%d-%b").lstrip("0")
     last_label = last_month_end.strftime("%d-%b").lstrip("0")
-
     return curr_label, last_label
 
+# ============================================================
+# UTILS
+# ============================================================
 
-def get_unique_output_path(base: Path) -> Path:
-    if not base.exists():
-        return base
+def get_unique_output_path(base_path: Path) -> Path:
+    if not base_path.exists():
+        return base_path
     i = 1
     while True:
-        new = base.with_name(f"{base.stem}_{i}{base.suffix}")
-        if not new.exists():
-            return new
+        new_path = base_path.with_name(f"{base_path.stem}_{i}{base_path.suffix}")
+        if not new_path.exists():
+            return new_path
         i += 1
-# ==============================================
-# HELPERS
-# ==============================================
 
-def is_agency_worker(t):
-    if not isinstance(t, str):
+def is_agency_worker(emp_type: str) -> bool:
+    if not isinstance(emp_type, str):
         return False
-    t2 = t.lower()
-    return "agency" in t2 and "worker" in t2
+    s = emp_type.lower()
+    return "agency" in s and "worker" in s
 
+# ============================================================
+# LOAD MAPPINGS (INCLUDING PROJECT MAPPING)
+# ============================================================
 
-# ==============================================
-# LOAD MAPPING FILES
-# ==============================================
+def load_mapping_frames(mapping_wb_path: Path):
+    mapping = pd.read_excel(mapping_wb_path, sheet_name=MAPPING_SHEET_NAME)
+    rollup  = pd.read_excel(mapping_wb_path, sheet_name=ROLLUP_SHEET_NAME)
 
-def load_mapping_frames(path: Path):
-    mapping = pd.read_excel(path, sheet_name=MAPPING_SHEET_NAME)
-    rollup  = pd.read_excel(path, sheet_name=ROLLUP_SHEET_NAME)
-    projmap = pd.read_excel(path, sheet_name=PROJECT_SHEET_NAME)
+    project_map = pd.read_excel(mapping_wb_path, sheet_name=PROJECT_SHEET_NAME)
+    project_map = project_map[[COL_POSITION_ID, "Project Name"]].drop_duplicates()
 
-    bf_map = mapping[[COL_MAP_BF_L6, COL_COST_CAT, COL_MT_DOMAIN, COL_MT1_DOMAIN]].drop_duplicates()
-    emp_map = mapping[[COL_MAP_EMP_TYP, COL_CONTR]].drop_duplicates()
-    proj_map = projmap[[COL_PROJ_POSID, COL_PROJ_NAME]].drop_duplicates()
+    bf_map = mapping[
+        [COL_MAP_BF_L6, COL_COST_CAT, COL_MT_DOMAIN, COL_MT1_DOMAIN]
+    ].drop_duplicates()
 
-    return bf_map, emp_map, rollup, proj_map
+    emp_map = mapping[
+        [COL_MAP_EMP_TYP, COL_CONTR]
+    ].drop_duplicates()
 
+    return bf_map, emp_map, rollup, project_map
 
-# ==============================================
-# APPLY MAPPINGS TO HC
-# ==============================================
+# ============================================================
+# APPLY MAPPINGS + PROJECT MERGE
+# ============================================================
 
-def apply_mappings_to_hc(hc_raw, bf_map, emp_map, proj_map):
-    df = hc_raw[[COL_BANK_ID, COL_BF_L6, COL_EMP_TYPE_HC, COL_FTE, COL_POSITION_ID]].copy()
+def apply_mappings_to_hc(hc_raw, bf_map, emp_map, project_map):
+
+    df = hc_raw[
+        [COL_BANK_ID, COL_BF_L6, COL_EMP_TYPE_HC, COL_FTE, COL_POSITION_ID]
+    ].copy()
 
     df[COL_BANK_ID] = df[COL_BANK_ID].astype(str).str.strip()
     df[COL_POSITION_ID] = df[COL_POSITION_ID].astype(str).str.strip()
 
-    df = df.merge(bf_map, left_on=COL_BF_L6, right_on=COL_MAP_BF_L6, how="left")
-    df = df.merge(emp_map, left_on=COL_EMP_TYPE_HC, right_on=COL_MAP_EMP_TYP, how="left")
+    df = df.merge(
+        bf_map,
+        left_on=COL_BF_L6,
+        right_on=COL_MAP_BF_L6,
+        how="left"
+    )
 
     df = df.merge(
-        proj_map,
-        left_on=COL_POSITION_ID,
-        right_on=COL_PROJ_POSID,
+        emp_map,
+        left_on=COL_EMP_TYPE_HC,
+        right_on=COL_MAP_EMP_TYP,
+        how="left"
+    )
+
+    df = df.merge(
+        project_map,
+        on=COL_POSITION_ID,
         how="left"
     )
 
     df.rename(columns={COL_CONTR: "ContrFlag"}, inplace=True)
+
     df["MT_CC"] = df[COL_MT_DOMAIN].astype(str) + "-" + df[COL_COST_CAT].astype(str)
 
     return df
 
+# ============================================================
+# SNAPSHOTS
+# ============================================================
 
-# ==============================================
-# SNAPSHOT BUILDER
-# ==============================================
-
-def build_snapshot(df, suffix):
+def build_snapshot(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
     cols = [
-        COL_BANK_ID, "MT_CC", COL_COST_CAT, COL_MT_DOMAIN,
-        COL_EMP_TYPE_HC, "ContrFlag", COL_FTE, COL_POSITION_ID, COL_PROJ_NAME
+        COL_BANK_ID,
+        "MT_CC",
+        COL_COST_CAT,
+        COL_MT_DOMAIN,
+        COL_EMP_TYPE_HC,
+        "ContrFlag",
+        COL_FTE,
+        COL_POSITION_ID,
+        "Project Name",
     ]
-    snap = df[cols].copy().sort_values(COL_BANK_ID).drop_duplicates(COL_BANK_ID, keep="last")
+
+    snap = df[cols].copy()
+    snap = snap.sort_values(COL_BANK_ID).drop_duplicates(COL_BANK_ID, keep="last")
     snap = snap.add_suffix(f"_{suffix}")
     snap.rename(columns={f"{COL_BANK_ID}_{suffix}": COL_BANK_ID}, inplace=True)
     return snap
 
+# ============================================================
+# CLASSIFY MOVEMENTS (with project names carried through)
+# ============================================================
 
-# ==============================================
-# CLASSIFY MOVEMENTS (NOW CAPTURES PROJECT NAME)
-# ==============================================
-
-def classify_movements(combined, rollup_ids):
+def classify_movements(combined: pd.DataFrame, rollup_ids: set) -> pd.DataFrame:
     rows = []
 
-    def add_move(bid, mtcc, costcat, mtd, movement, fte, emp, contr,
-                 posid, proj, from_mt=None, to_mt=None):
+    def add_move(
+        bank_id,
+        mt_cc,
+        cost_cat,
+        mt_domain,
+        movement,
+        fte,
+        emp_type,
+        contr_side,
+        project_name,
+        from_mt_cc=None,
+        to_mt_cc=None
+    ):
         if pd.isna(fte) or fte == 0:
             return
         rows.append({
-            COL_BANK_ID: bid,
-            "MT_CC": mtcc,
-            COL_COST_CAT: costcat,
-            COL_MT_DOMAIN: mtd,
+            COL_BANK_ID: bank_id,
+            "MT_CC": mt_cc,
+            COL_COST_CAT: cost_cat,
+            COL_MT_DOMAIN: mt_domain,
             "Movement": movement,
             "FTE": float(fte),
-            "EmpType": emp,
-            "ContrSide": contr,
-            "PositionID": posid,
-            "ProjectName": proj,
-            "From_MT_CC": from_mt,
-            "To_MT_CC": to_mt
+            "EmpType": emp_type,
+            "ContrSide": contr_side,
+            "ProjectName": project_name,
+            "From_MT_CC": from_mt_cc,
+            "To_MT_CC": to_mt_cc,
         })
 
     for _, r in combined.iterrows():
         bid = r[COL_BANK_ID]
 
-        has_last = pd.notna(r["MT_CC_last"])
-        has_curr = pd.notna(r["MT_CC_curr"])
+        has_last = pd.notna(r.get("MT_CC_last"))
+        has_curr = pd.notna(r.get("MT_CC_curr"))
 
-        mt_last  = r.get("MT_CC_last")
-        mt_curr  = r.get("MT_CC_curr")
+        mt_cc_last = r.get("MT_CC_last")
+        mt_cc_curr = r.get("MT_CC_curr")
 
         cost_last = r.get(f"{COL_COST_CAT}_last")
         cost_curr = r.get(f"{COL_COST_CAT}_curr")
 
-        dom_last = r.get(f"{COL_MT_DOMAIN}_last")
-        dom_curr = r.get(f"{COL_MT_DOMAIN}_curr")
+        mt_last = r.get(f"{COL_MT_DOMAIN}_last")
+        mt_curr = r.get(f"{COL_MT_DOMAIN}_curr")
 
         fte_last = r.get(f"{COL_FTE}_last")
         fte_curr = r.get(f"{COL_FTE}_curr")
@@ -231,340 +261,504 @@ def classify_movements(combined, rollup_ids):
         emp_last = r.get(f"{COL_EMP_TYPE_HC}_last")
         emp_curr = r.get(f"{COL_EMP_TYPE_HC}_curr")
 
+        project_last = r.get(f"Project Name_last")
+        project_curr = r.get(f"Project Name_curr")
+
         contr_last = r.get("ContrFlag_last")
         contr_curr = r.get("ContrFlag_curr")
 
-        pos_last = r.get(f"{COL_POSITION_ID}_last")
-        pos_curr = r.get(f"{COL_POSITION_ID}_curr")
-
-        proj_last = r.get(f"{COL_PROJ_NAME}_last")
-        proj_curr = r.get(f"{COL_PROJ_NAME}_curr")
-
-        # NEW JOINER TYPES
         if has_curr and not has_last:
             movement = "Non TnO Joiners" if bid in rollup_ids else "New Joiners"
-            add_move(bid, mt_curr, cost_curr, dom_curr, movement,
-                     fte_curr, emp_curr, contr_curr, pos_curr, proj_curr)
-            continue
+            add_move(
+                bid, mt_cc_curr, cost_curr, mt_curr,
+                movement, fte_curr, emp_curr, contr_curr,
+                project_curr
+            )
 
-        # LEFT BANK
-        if has_last and not has_curr:
-            add_move(bid, mt_last, cost_last, dom_last, "Left Bank",
-                     fte_last, emp_last, contr_last, pos_last, proj_last)
-            continue
+        elif has_last and not has_curr:
+            add_move(
+                bid, mt_cc_last, cost_last, mt_last,
+                "Left Bank", fte_last, emp_last, contr_last,
+                project_last
+            )
 
-        # BOTH LAST & CURR
-        if mt_last == mt_curr:
-            if contr_last == CONTR_VALUE_NON_CONT and contr_curr == CONTR_VALUE_CONT:
-                add_move(bid, mt_curr, cost_curr, dom_curr, "Conversion in",
-                         fte_curr, emp_curr, contr_curr, pos_curr, proj_curr)
-            elif contr_last == CONTR_VALUE_CONT and contr_curr == CONTR_VALUE_NON_CONT:
-                add_move(bid, mt_curr, cost_curr, dom_curr, "Conversion out",
-                         fte_curr, emp_curr, contr_curr, pos_curr, proj_curr)
-        else:
-            add_move(bid, mt_last, cost_last, dom_last, "Transfer out",
-                     fte_last, emp_last, contr_last, pos_last, proj_last,
-                     to_mt=mt_curr)
-
-            add_move(bid, mt_curr, cost_curr, dom_curr, "Transfer in",
-                     fte_curr, emp_curr, contr_curr, pos_curr, proj_curr,
-                     from_mt=mt_last)
+        elif has_last and has_curr:
+            if mt_cc_last == mt_cc_curr:
+                if contr_last == CONTR_VALUE_NON_CONT and contr_curr == CONTR_VALUE_CONT:
+                    add_move(
+                        bid, mt_cc_curr, cost_curr, mt_curr,
+                        "Conversion in", fte_curr, emp_curr, contr_curr,
+                        project_curr
+                    )
+                elif contr_last == CONTR_VALUE_CONT and contr_curr == CONTR_VALUE_NON_CONT:
+                    add_move(
+                        bid, mt_cc_curr, cost_curr, mt_curr,
+                        "Conversion out", fte_curr, emp_curr, contr_curr,
+                        project_curr
+                    )
+            else:
+                add_move(
+                    bid, mt_cc_last, cost_last, mt_last,
+                    "Transfer out", fte_last, emp_last, contr_last,
+                    project_last, to_mt_cc=mt_cc_curr
+                )
+                add_move(
+                    bid, mt_cc_curr, cost_curr, mt_curr,
+                    "Transfer in", fte_curr, emp_curr, contr_curr,
+                    project_curr, from_mt_cc=mt_cc_last
+                )
 
     return pd.DataFrame(rows)
-# ==============================================
-# BUILD COMMENTS + PROJECT DETAILS
-# ==============================================
+# ============================================================
+# BUILD COMMENTS (CONTROLLABLE ONLY)
+# ============================================================
 
-POSITIVE_MOVES = ["New Joiners", "Non TnO Joiners", "Conversion in", "Transfer in"]
+def build_comments_for_controllable(movements: pd.DataFrame) -> pd.DataFrame:
+    if movements.empty:
+        return pd.DataFrame(columns=["MT_CC", "Comments"])
 
-def build_comments_and_project_details(mov):
-    if mov.empty:
-        return pd.DataFrame(columns=["MT_CC", "Comments", "Project Details"])
-
-    df = mov[mov["ContrSide"] == CONTR_VALUE_CONT].copy()
+    df = movements[movements["ContrSide"] == CONTR_VALUE_CONT].copy()
     if df.empty:
-        return pd.DataFrame(columns=["MT_CC", "Comments", "Project Details"])
+        return pd.DataFrame(columns=["MT_CC", "Comments"])
 
     df["is_AW"] = df["EmpType"].apply(is_agency_worker)
     df["AW_FTE"] = np.where(df["is_AW"], df["FTE"], 0.0)
     df["FTE_FTE"] = np.where(df["is_AW"], 0.0, df["FTE"])
 
-    totals = df.groupby(["MT_CC", COL_COST_CAT, COL_MT_DOMAIN, "Movement"],
-                        as_index=False).agg(
-        Total_FTE=("FTE", "sum"),
-        AW_FTE=("AW_FTE", "sum"),
-        FTE_FTE=("FTE_FTE", "sum")
+    totals = (
+        df.groupby(["MT_CC", COL_COST_CAT, COL_MT_DOMAIN, "Movement"], as_index=False)
+        .agg(
+            Total_FTE=("FTE", "sum"),
+            AW_FTE=("AW_FTE", "sum"),
+            FTE_FTE=("FTE_FTE", "sum"),
+        )
     )
 
-    tin_det  = df[df["Movement"] == "Transfer in"].dropna(subset=["From_MT_CC"])
-    tout_det = df[df["Movement"] == "Transfer out"].dropna(subset=["To_MT_CC"])
+    tin = (
+        df[df["Movement"] == "Transfer in"]
+        .dropna(subset=["From_MT_CC"])
+        .groupby(["MT_CC", "From_MT_CC"], as_index=False)["FTE"]
+        .sum()
+    )
+    tout = (
+        df[df["Movement"] == "Transfer out"]
+        .dropna(subset=["To_MT_CC"])
+        .groupby(["MT_CC", "To_MT_CC"], as_index=False)["FTE"]
+        .sum()
+    )
 
     tin_dict = defaultdict(list)
-    for _, r in tin_det.groupby(["MT_CC", "From_MT_CC"])["FTE"].sum().reset_index().iterrows():
-        tin_dict[r["MT_CC"]].append(f"{r['From_MT_CC']}={round(r['FTE'])}")
+    for _, r in tin.iterrows():
+        mt = r["MT_CC"]
+        src = r["From_MT_CC"]
+        fte = round(r["FTE"])
+        if fte != 0:
+            tin_dict[mt].append(f"{src}={fte}")
 
     tout_dict = defaultdict(list)
-    for _, r in tout_det.groupby(["MT_CC", "To_MT_CC"])["FTE"].sum().reset_index().iterrows():
-        tout_dict[r["MT_CC"]].append(f"{r['To_MT_CC']}={round(r['FTE'])}")
-
-    # PROJECT DETAIL SUMMARY
-    proj_dict = defaultdict(lambda: defaultdict(float))
-
-    for _, r in df.iterrows():
-        if r["Movement"] not in POSITIVE_MOVES:
-            continue
-        proj = r["ProjectName"]
-        proj = "NA" if (proj is None or str(proj).strip() == "" or str(proj) == "nan") else str(proj)
-        proj_dict[r["MT_CC"]][proj] += r["FTE"]
+    for _, r in tout.iterrows():
+        mt = r["MT_CC"]
+        dst = r["To_MT_CC"]
+        fte = round(r["FTE"])
+        if fte != 0:
+            tout_dict[mt].append(f"{dst}={fte}")
 
     movement_order = [
-        "New Joiners", "Non TnO Joiners", "Conversion in",
-        "Transfer in", "Left Bank", "Conversion out", "Transfer out"
+        "New Joiners",
+        "Non TnO Joiners",
+        "Conversion in",
+        "Transfer in",
+        "Left Bank",
+        "Conversion out",
+        "Transfer out",
     ]
 
-    final_rows = []
+    rows = []
 
-    for mtcc, grp in totals.groupby("MT_CC"):
+    for mt_cc, grp in totals.groupby("MT_CC"):
         grp = grp.set_index("Movement")
+
+        def vals(m):
+            if m not in grp.index:
+                return 0.0, 0.0, 0.0
+            row = grp.loc[m]
+            return float(row["Total_FTE"]), float(row["AW_FTE"]), float(row["FTE_FTE"])
+
         lines = []
 
         for m in movement_order:
-            if m in grp.index:
-                row = grp.loc[m]
-                tot, aw, ft = float(row["Total_FTE"]), float(row["AW_FTE"]), float(row["FTE_FTE"])
-                tot_r, aw_r, ft_r = round(tot), round(aw), round(ft)
+            tot, aw, fte = vals(m)
+            tot_r = round(tot)
+            aw_r = round(aw)
+            fte_r = round(fte)
 
-                if m == "Transfer in":
-                    det = "; ".join(tin_dict.get(mtcc, []))
-                    lines.append(f"Transfer in = {tot_r}({det})" if det else f"Transfer in = {tot_r}")
-                elif m == "Transfer out":
-                    det = "; ".join(tout_dict.get(mtcc, []))
-                    lines.append(f"Transfer out = {tot_r}({det})" if det else f"Transfer out = {tot_r}")
+            if m == "Transfer in":
+                details = tin_dict.get(mt_cc)
+                if details:
+                    lines.append(f"Transfer in = {tot_r}({'; '.join(details)})")
                 else:
-                    lines.append(f"{m} = {tot_r}(AW = {aw_r} & FTE = {ft_r})")
+                    lines.append(f"Transfer in = {tot_r}")
+
+            elif m == "Transfer out":
+                details = tout_dict.get(mt_cc)
+                if details:
+                    lines.append(f"Transfer out = {tot_r}({'; '.join(details)})")
+                else:
+                    lines.append(f"Transfer out = {tot_r}")
+
             else:
-                lines.append(f"{m} = 0")
+                lines.append(f"{m} = {tot_r}(AW = {aw_r} & FTE = {fte_r})")
 
-        # build project detail string
-        proj_map = proj_dict.get(mtcc, {})
-        if proj_map:
-            proj_lines = [f"{p}={round(v)}" for p, v in proj_map.items()]
-            proj_text = "; ".join(proj_lines)
-        else:
-            proj_text = ""
-
-        final_rows.append({
-            "MT_CC": mtcc,
-            "Comments": "\n".join(lines),
-            "Project Details": proj_text
+        rows.append({
+            "MT_CC": mt_cc,
+            "Comments": "\n".join(lines)
         })
 
-    return pd.DataFrame(final_rows)
+    return pd.DataFrame(rows)
 
+# ============================================================
+# PROJECT DETAILS BUILDER
+# ============================================================
 
-# ==============================================
-# SUMMARY
-# ==============================================
+def build_project_details(movements: pd.DataFrame) -> pd.DataFrame:
+    if movements.empty:
+        return pd.DataFrame(columns=["MT_CC", "Project Details"])
 
-def build_hc_summary_controllable(hc_curr, hc_last):
-    c1 = hc_curr[hc_curr["ContrFlag"] == CONTR_VALUE_CONT].copy()
-    c2 = hc_last[hc_last["ContrFlag"] == CONTR_VALUE_CONT].copy()
+    df = movements[movements["ContrSide"] == CONTR_VALUE_CONT].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["MT_CC", "Project Details"])
+
+    df["ProjectName"] = df["ProjectName"].fillna("NA")
+
+    movement_groups = [
+        "New Joiners",
+        "Non TnO Joiners",
+        "Conversion in",
+        "Transfer in",
+    ]
+
+    proj_rows = []
+
+    for mt_cc, block in df.groupby("MT_CC"):
+        details_lines = []
+
+        for m in movement_groups:
+            sub = block[block["Movement"] == m]
+            if sub.empty:
+                details_lines.append(f"{m}: NA")
+                continue
+
+            proj_counts = (
+                sub.groupby("ProjectName")["FTE"]
+                .sum()
+                .round(0)
+                .astype(int)
+            )
+
+            proj_parts = [f"{p}={c}" for p, c in proj_counts.items()]
+            if proj_parts:
+                details_lines.append(f"{m}: " + "; ".join(proj_parts))
+            else:
+                details_lines.append(f"{m}: NA")
+
+        proj_rows.append({
+            "MT_CC": mt_cc,
+            "Project Details": "\n".join(details_lines)
+        })
+
+    return pd.DataFrame(proj_rows)
+
+# ============================================================
+# SUMMARY BUILDERS
+# ============================================================
+
+def build_hc_summary_controllable(hc_curr: pd.DataFrame, hc_last: pd.DataFrame) -> pd.DataFrame:
+    curr_c = hc_curr[hc_curr["ContrFlag"] == CONTR_VALUE_CONT].copy()
+    last_c = hc_last[hc_last["ContrFlag"] == CONTR_VALUE_CONT].copy()
 
     cols = [COL_COST_CAT, COL_MT_DOMAIN, "MT_CC"]
 
-    s1 = c1.groupby(cols, as_index=False).agg(HC_Current=(COL_FTE, "sum"))
-    s2 = c2.groupby(cols, as_index=False).agg(HC_Last=(COL_FTE, "sum"))
+    curr_sum = curr_c.groupby(cols, as_index=False).agg(
+        HC_Current=(COL_FTE, "sum")
+    )
+    last_sum = last_c.groupby(cols, as_index=False).agg(
+        HC_Last=(COL_FTE, "sum")
+    )
 
-    out = s1.merge(s2, on=cols, how="outer")
-    out["HC_Current"] = out["HC_Current"].fillna(0)
-    out["HC_Last"]    = out["HC_Last"].fillna(0)
-    out["Net_Change"] = out["HC_Current"] - out["HC_Last"]
+    summary = curr_sum.merge(last_sum, on=cols, how="outer")
 
-    out["HC_Current"] = out["HC_Current"].round(0).astype(int)
-    out["HC_Last"]    = out["HC_Last"].round(0).astype(int)
-    out["Net_Change"] = out["Net_Change"].round(0).astype(int)
+    summary["HC_Current"] = summary["HC_Current"].fillna(0.0)
+    summary["HC_Last"]    = summary["HC_Last"].fillna(0.0)
+    summary["Net_Change"] = summary["HC_Current"] - summary["HC_Last"]
 
-    return out
+    summary["HC_Current"] = summary["HC_Current"].round(0).astype(int)
+    summary["HC_Last"]    = summary["HC_Last"].round(0).astype(int)
+    summary["Net_Change"] = summary["Net_Change"].round(0).astype(int)
 
+    return summary
 
-def sort_cost_cat_mt(df):
-    t = pd.CategoricalDtype(COST_CAT_ORDER, ordered=True)
-    out = df.copy()
+# ============================================================
+# SORT & TOTAL ROWS
+# ============================================================
+
+def sort_cost_cat_mt(summary: pd.DataFrame) -> pd.DataFrame:
+    cat_type = pd.CategoricalDtype(COST_CAT_ORDER, ordered=True)
+
+    out = summary.copy()
     out[COL_COST_CAT] = out[COL_COST_CAT].astype(str)
-    out["__x"] = out[COL_COST_CAT].astype(t)
-    out = out.sort_values(["__x", COL_MT_DOMAIN])
-    out = out.drop(columns="__x")
+    out["__cat"] = out[COL_COST_CAT].astype(cat_type)
+    out = out.sort_values(["__cat", COL_MT_DOMAIN])
+    out = out.drop(columns="__cat")
     return out
 
+def add_totals_rows(df: pd.DataFrame, curr_col: str, last_col: str, net_col: str) -> pd.DataFrame:
+    pieces = []
 
-def add_totals_rows(df, curr_col, last_col, net_col):
-    blocks = []
     for cat in COST_CAT_ORDER:
-        part = df[df[COL_COST_CAT] == cat]
-        if part.empty:
+        block = df[df[COL_COST_CAT] == cat]
+        if block.empty:
             continue
-        blocks.append(part)
+        pieces.append(block)
 
-        c = int(part[curr_col].sum())
-        l = int(part[last_col].sum())
-        n = c - l
-        blocks.append(pd.DataFrame([{
+        total_curr = int(block[curr_col].sum())
+        total_last = int(block[last_col].sum())
+        total_net  = total_curr - total_last
+
+        pieces.append(pd.DataFrame([{
             COL_COST_CAT: TOTAL_LABELS[cat],
             COL_MT_DOMAIN: "",
-            curr_col: c, last_col: l, net_col: n,
+            curr_col: total_curr,
+            last_col: total_last,
+            net_col: total_net,
             "Comments": "",
-            "Project Details": ""
+            "Project Details": "",
         }]))
 
-    c = int(df[curr_col].sum())
-    l = int(df[last_col].sum())
-    n = c - l
+    total_curr = int(df[curr_col].sum())
+    total_last = int(df[last_col].sum())
+    total_net  = total_curr - total_last
 
     grand = pd.DataFrame([{
         COL_COST_CAT: GRAND_TOTAL_LABEL,
         COL_MT_DOMAIN: "",
-        curr_col: c, last_col: l, net_col: n,
+        curr_col: total_curr,
+        last_col: total_last,
+        net_col: total_net,
         "Comments": "",
-        "Project Details": ""
+        "Project Details": "",
     }])
 
-    return pd.concat(blocks + [grand], ignore_index=True)
-# ==============================================
-# EXCEL FORMATTING (unchanged)
-# ==============================================
+    if pieces:
+        return pd.concat(pieces + [grand], ignore_index=True)
+    else:
+        return grand
 
-def style_professional(path):
-    wb = load_workbook(path)
+# ============================================================
+# EXCEL FORMATTING
+# ============================================================
+
+def style_professional(output_path: Path):
+    wb = load_workbook(output_path)
     ws = wb[OUTPUT_SHEET_NAME]
 
-    bold = Font(bold=True, size=12)
-    head = Font(bold=True, size=11)
-    wrap = Alignment(wrap_text=True, vertical="top")
-    center = Alignment(vertical="center")
-
-    fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+    bold_font = Font(bold=True, size=12)
+    header_font = Font(bold=True, size=11)
+    wrap_alignment = Alignment(wrap_text=True, vertical="top")
+    normal_alignment = Alignment(wrap_text=False, vertical="center")
+    total_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
     thin = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin")
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
     )
 
     total_labels = set(TOTAL_LABELS.values()) | {GRAND_TOTAL_LABEL}
 
-    # header
-    for c in range(1, ws.max_column + 1):
-        cell = ws.cell(1, c)
-        cell.font = head
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin
+    # Header
+    for col in range(1, ws.max_column + 1):
+        c = ws.cell(row=1, column=col)
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin
     ws.row_dimensions[1].height = 22
 
-    # body
-    for r in range(2, ws.max_row + 1):
-        cat = ws[f"A{r}"].value
-        for c in range(1, ws.max_column + 1):
-            cell = ws.cell(r, c)
-            cell.border = thin
+    # Row formatting
+    for row in range(2, ws.max_row + 1):
+        cc = ws[f"A{row}"].value
+        has_comments = any([
+            (ws[f"{chr(64+col)}{row}"].value and "\n" in str(ws[f"{chr(64+col)}{row}"].value))
+            for col in range(1, ws.max_column + 1)
+        ])
 
-        if isinstance(cat, str) and cat in total_labels:
-            ws.row_dimensions[r].height = 25
-            for c in range(1, ws.max_column + 1):
-                cell = ws.cell(r, c)
-                cell.font = bold
-                cell.fill = fill
+        ws.row_dimensions[row].height = 18
+
+        # total rows
+        if isinstance(cc, str) and cc in total_labels:
+            ws.row_dimensions[row].height = 25
+            for col in range(1, ws.max_column + 1):
+                c = ws.cell(row=row, column=col)
+                c.font = bold_font
+                c.fill = total_fill
+                c.border = thin
         else:
-            ws.row_dimensions[r].height = 18
+            for col in range(1, ws.max_column + 1):
+                c = ws.cell(row=row, column=col)
+                c.border = thin
 
-        # wrap text for Comments + Project Details (last 2 columns)
-        for c in [ws.max_column - 1, ws.max_column]:
-            ws.cell(r, c).alignment = wrap
+        # Expand rows with comments or project details
+        for col in range(1, ws.max_column + 1):
+            v = ws.cell(row=row, column=col).value
+            if isinstance(v, str) and "\n" in v:
+                lines = v.count("\n") + 1
+                ws.row_dimensions[row].height = max(ws.row_dimensions[row].height, min(18 + 12*lines, 220))
+                break
 
-    # auto width
-    for c in range(1, ws.max_column + 1):
-        col = ws.cell(1, c).column_letter
+    # Auto column width
+    for col in range(1, ws.max_column + 1):
+        letter = ws.cell(row=1, column=col).column_letter
         max_len = 0
-        for r in range(1, ws.max_row + 1):
-            v = ws.cell(r, c).value
-            if v:
-                max_len = max(max_len, len(str(v)))
-        ws.column_dimensions[col].width = min(max_len + 3, 60)
+        for row in range(1, ws.max_row+1):
+            v = ws.cell(row=row, column=col).value
+            if v is None:
+                continue
+            l = len(str(v))
+            if l > max_len:
+                max_len = l
+        ws.column_dimensions[letter].width = min(max_len + 3, 60)
 
     ws.freeze_panes = "C2"
-    wb.save(path)
+    wb.save(output_path)
+# ============================================================
+# HTML TABLE (WITH PROJECT DETAILS COLUMN)
+# ============================================================
 
+def build_html_table_from_summary(df: pd.DataFrame,
+                                  curr_label: str,
+                                  last_label: str) -> str:
 
-# ==============================================
-# BUILD HTML TABLE FOR EMAIL
-# ==============================================
+    df_html = df.copy().replace({np.nan: ""})
 
-def build_html_table(df, curr_label, last_label):
-    df2 = df.replace({np.nan: ""}).copy()
-    df2["Comments"] = df2["Comments"].astype(str).str.replace("\n", "<br>")
-    df2["Project Details"] = df2["Project Details"].astype(str)
+    # convert newlines to <br>
+    for c in ("Comments", "Project Details"):
+        if c in df_html.columns:
+            df_html[c] = (
+                df_html[c]
+                .astype(str)
+                .replace("nan", "")
+                .str.replace("\n", "<br>")
+            )
 
-    cols = ["COST CAT", "MT DOMAIN", curr_label, last_label, "Net Change", "Comments", "Project Details"]
-    cols = [c for c in cols if c in df2.columns]
+    # Column order including Project Details (last)
+    col_order = [
+        "COST CAT",
+        "MT DOMAIN",
+        curr_label,
+        last_label,
+        "Net Change",
+        "Comments",
+        "Project Details",
+    ]
+    col_order = [c for c in col_order if c in df_html.columns]
+    df_html = df_html[col_order]
 
-    df2 = df2[cols]
-
+    # Table CSS
     table_style = (
-        "border-collapse:collapse;font-family:Calibri;font-size:11px;"
+        "border-collapse:collapse;"
+        "font-family:Calibri,Arial,sans-serif;"
+        "font-size:11px;"
     )
-    th = (
-        "border:1px solid #888;padding:4px 6px;background-color:#F0F0F0;"
-        "font-weight:bold;text-align:center;"
+    td_style_base = (
+        "border:1px solid #999999;"
+        "padding:4px 6px;"
+        "vertical-align:top;"
     )
-    td = "border:1px solid #888;padding:4px 6px;vertical-align:top;"
+    th_style = (
+        "border:1px solid #999999;"
+        "padding:4px 6px;"
+        "background-color:#F0F0F0;"
+        "font-weight:bold;"
+        "text-align:center;"
+    )
+
+    # Column width (px)
+    col_widths = {
+        "COST CAT": 90,
+        "MT DOMAIN": 120,
+        curr_label: 70,
+        last_label: 70,
+        "Net Change": 70,
+        "Comments": 260,
+        "Project Details": 260,
+    }
 
     total_labels = set(TOTAL_LABELS.values())
     grand = GRAND_TOTAL_LABEL
 
-    html = [f'<table style="{table_style}">', "<tr>"]
-    for c in cols:
-        html.append(f'<th style="{th}">{c}</th>')
+    html = [f'<table style="{table_style}">']
+
+    # header
+    html.append("<tr>")
+    for col in col_order:
+        w = col_widths.get(col, 80)
+        html.append(f'<th style="{th_style}width:{w}px;">{col}</th>')
     html.append("</tr>")
 
-    for _, row in df2.iterrows():
-        cat = str(row["COST CAT"])
+    # body rows
+    for _, row in df_html.iterrows():
+        cat = str(row.get("COST CAT", ""))
         if cat == grand:
-            bg = "#D0D0D0"; fw = "bold"
+            bg = "#D0D0D0"
+            weight = "bold"
         elif cat in total_labels:
-            bg = "#E0E0E0"; fw = "bold"
+            bg = "#E0E0E0"
+            weight = "bold"
         else:
-            bg = "#FFFFFF"; fw = "normal"
+            bg = "#FFFFFF"
+            weight = "normal"
 
         html.append("<tr>")
-        for c in cols:
-            v = row[c]
-            style = f"{td}background-color:{bg};font-weight:{fw};"
-            if c in (curr_label, last_label, "Net Change"):
-                style += "text-align:center;"
-            html.append(f'<td style="{style}">{v}</td>')
-        html.append("</tr>")
-    html.append("</table>")
+        for col in col_order:
+            val = row[col]
+            val = "" if str(val) == "nan" else str(val)
 
+            style = td_style_base + f"background-color:{bg};font-weight:{weight};"
+
+            if col in (curr_label, last_label, "Net Change"):
+                style += "text-align:center;"
+            else:
+                style += "text-align:left;"
+
+            html.append(f'<td style="{style}">{val}</td>')
+        html.append("</tr>")
+
+    html.append("</table>")
     return "\n".join(html)
 
 
-# ==============================================
-# SEND EMAIL (HTML BODY)
-# ==============================================
+# ============================================================
+# SEND EMAIL
+# ============================================================
 
-def send_email(path, curr_label, last_label):
-    df = pd.read_excel(path, sheet_name=OUTPUT_SHEET_NAME)
-    html_table = build_html_table(df, curr_label, last_label)
+def send_summary_email_with_html_table(output_path: Path, curr_label: str, last_label: str):
+
+    df = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_NAME)
+    html_table = build_html_table_from_summary(df, curr_label, last_label)
 
     outlook = win32.Dispatch("Outlook.Application")
     mail = outlook.CreateItem(0)
-
     mail.To = EMAIL_TO
     mail.Subject = f"Daily Headcount – {curr_label}"
-    mail.BodyFormat = 2
+    mail.BodyFormat = 2  # HTML
 
-    mail.HTMLBody = f"""
-    <p>Hi all,<br>PFB Headcount as of {curr_label}:</p>
+    body_html = f"""
+    <p>Hi all,<br>
+    PFB Headcount as of {curr_label}</p>
     {html_table}
     """
+
+    mail.HTMLBody = body_html
 
     try:
         mail.Recipients.ResolveAll()
@@ -575,92 +769,103 @@ def send_email(path, curr_label, last_label):
 
     ctypes.windll.user32.MessageBoxW(
         0,
-        f"Daily Headcount emailed successfully for {curr_label}.",
+        f"Daily Headcount summary generated & emailed successfully for {curr_label}.",
         "Daily HC",
         0
     )
 
 
-# ==============================================
+# ============================================================
 # MAIN
-# ==============================================
+# ============================================================
 
 def main():
-    print("Loading mapping...")
-    bf_map, emp_map, rollup, proj_map = load_mapping_frames(MAPPING_WB_PATH)
+    print("Loading mapping & rollup...")
+    bf_map, emp_map, rollup, project_map = load_mapping_frames(MAPPING_WB_PATH)
 
     print("Loading HC files...")
     hc_curr_raw = pd.read_excel(CURRENT_HC_PATH)
     hc_last_raw = pd.read_excel(LAST_HC_PATH)
 
     print("Applying mappings...")
-    hc_curr = apply_mappings_to_hc(hc_curr_raw, bf_map, emp_map, proj_map)
-    hc_last = apply_mappings_to_hc(hc_last_raw, bf_map, emp_map, proj_map)
+    hc_curr = apply_mappings_to_hc(hc_curr_raw, bf_map, emp_map, project_map)
+    hc_last = apply_mappings_to_hc(hc_last_raw, bf_map, emp_map, project_map)
 
     print("Snapshots...")
     snap_curr = build_snapshot(hc_curr, "curr")
     snap_last = build_snapshot(hc_last, "last")
 
-    print("Rollup IDs...")
-    roll_ids = set(
-        rollup[COL_ROLLUP_ID].dropna().astype(str).str.strip().unique().tolist()
+    print("Rollup prep...")
+    rollup_ids = (
+        rollup[COL_ROLLUP_ID]
+        .dropna().astype(str).str.strip().unique().tolist()
     )
+    rollup_ids = set(rollup_ids)
 
-    print("Combine snapshots...")
+    print("Joining snapshots...")
     combined = snap_last.merge(
-        snap_curr, on=COL_BANK_ID, how="outer"
+        snap_curr,
+        on=COL_BANK_ID,
+        how="outer",
     )
 
     print("Classifying movements...")
-    movements = classify_movements(combined, roll_ids)
+    movements = classify_movements(combined, rollup_ids)
 
-    print("Comments + Project Details...")
-    comm_proj = build_comments_and_project_details(movements)
+    print("Building comments...")
+    comments_df = build_comments_for_controllable(movements)
 
-    print("Summary...")
-    summary = build_hc_summary_controllable(hc_curr, hc_last)
+    print("Building project details...")
+    proj_df = build_project_details(movements)
 
-    print("Merge summary with comments...")
-    merged = summary.merge(comm_proj, on="MT_CC", how="left")
+    print("Building HC summary...")
+    hc_summary = build_hc_summary_controllable(hc_curr, hc_last)
+
+    print("Merging all...")
+    merged = hc_summary.merge(comments_df, on="MT_CC", how="left")
+    merged = merged.merge(proj_df, on="MT_CC", how="left")
+
     merged["Comments"] = merged["Comments"].fillna("")
     merged["Project Details"] = merged["Project Details"].fillna("")
 
     merged.loc[merged["Net_Change"].abs() <= COMMENT_THRESHOLD, "Comments"] = ""
     merged.loc[merged["Net_Change"].abs() <= COMMENT_THRESHOLD, "Project Details"] = ""
 
-    merged = merged[[COL_COST_CAT, COL_MT_DOMAIN, "HC_Current", "HC_Last", "Net_Change", "Comments", "Project Details"]]
+    merged = merged[
+        [COL_COST_CAT, COL_MT_DOMAIN, "HC_Current", "HC_Last", "Net_Change",
+         "Comments", "Project Details"]
+    ]
+
     merged = sort_cost_cat_mt(merged)
 
-    print("Add totals...")
+    print("Totals...")
+    merged = add_totals_rows(merged,
+                             curr_col="HC_Current",
+                             last_col="HC_Last",
+                             net_col="Net_Change")
+
     curr_label, last_label = get_date_labels()
 
-    merged2 = add_totals_rows(
-        merged,
-        curr_col="HC_Current",
-        last_col="HC_Last",
-        net_col="Net_Change"
-    )
-
-    merged2.rename(columns={
+    merged.rename(columns={
         "HC_Current": curr_label,
         "HC_Last": last_label,
         "Net_Change": "Net Change",
         COL_COST_CAT: "COST CAT",
-        COL_MT_DOMAIN: "MT DOMAIN"
+        COL_MT_DOMAIN: "MT DOMAIN",
     }, inplace=True)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    out_file = OUTPUT_DIR / f"HC_{curr_label.replace('-', '')}.xlsx"
-    out_file = get_unique_output_path(out_file)
+    file_tag = curr_label.replace("-", "")
+    output_path = get_unique_output_path(OUTPUT_DIR / f"HC_{file_tag}.xlsx")
 
-    print("Write Excel...")
-    merged2.to_excel(out_file, sheet_name=OUTPUT_SHEET_NAME, index=False)
+    print("Writing Excel...")
+    merged.to_excel(output_path, index=False, sheet_name=OUTPUT_SHEET_NAME)
 
-    print("Format Excel...")
-    style_professional(out_file)
+    print("Formatting Excel...")
+    style_professional(output_path)
 
-    print("Email...")
-    send_email(out_file, curr_label, last_label)
+    print("Emailing...")
+    send_summary_email_with_html_table(output_path, curr_label, last_label)
 
     print("Done.")
 
